@@ -23,6 +23,9 @@ from pathlib import Path
 SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 CONF = Path('/etc/intel-undervolt.conf')
+# The only owner the helper accepts for the configuration file it edits as root. A named constant so that
+# tests, which run as an ordinary user, can say whose files count as trusted; production always uses root.
+TRUSTED_UID = 0
 STATE = Path('/var/lib/thinkpad-nvidia-switch/undervolt-original.json')
 LABELS = {0: 'CPU', 1: 'GPU', 2: 'CPU Cache'}
 READER = re.compile(r'^\s*(CPU Cache|CPU|GPU)\s*\(([012])\)\s*:\s*([+-]?\d+(?:\.\d+)?)\s*mV', re.I | re.M)
@@ -120,7 +123,7 @@ def check_conf(path=CONF):
     if not path.is_file():
         raise RuntimeError(f'{path} is not a regular file.')
     st = path.stat()
-    if st.st_uid != 0 or st.st_mode & 0o022:
+    if st.st_uid != TRUSTED_UID or st.st_mode & 0o022:
         raise RuntimeError(f'{path} must be root-owned and not group/world writable.')
     return path.read_text(encoding='utf-8')
 

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Hardware-independent coverage for power estimates, voltage validation and migration."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -67,6 +68,13 @@ class BatteryTelemetryTests(unittest.TestCase):
 
 
 class UndervoltTests(unittest.TestCase):
+    def setUp(self):
+        # The helper only edits a root-owned file; these tests build their own files as whoever runs them
+        # (an ordinary user on CI), so that user counts as trusted here. The next class proves the real rule.
+        patcher = patch('undervolt_control.TRUSTED_UID', os.getuid())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_parser_recognizes_offsets(self):
         data = read_offsets('CPU (0): -30.27 mV\nGPU (1): -20.51 mV\nCPU Cache (2): -30.27 mV\n')
         self.assertEqual(data, {'cpu': -30.27, 'cache': -30.27, 'gpu': -20.51})
@@ -120,6 +128,45 @@ class UndervoltTests(unittest.TestCase):
             self.assertIn(original, json.loads(state.read_text())['original'])
 
 
+class ConfigOwnershipTests(unittest.TestCase):
+    """The root helper edits /etc/intel-undervolt.conf only when root owns it and nobody else can write it.
+
+    These tests must give the same answer whether they run as root or as an ordinary user (CI runs as a user).
+    """
+
+    def make_conf(self, mode=0o644):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        conf = Path(directory.name) / 'intel-undervolt.conf'
+        conf.write_text('undervolt 0 "CPU" 0\n')
+        conf.chmod(mode)
+        return conf
+
+    def test_a_file_owned_by_anyone_but_root_is_refused(self):
+        from undervolt_control import check_conf, TRUSTED_UID
+        self.assertEqual(TRUSTED_UID, 0)                      # production trusts root only
+        conf = self.make_conf()
+        if os.getuid() == 0:
+            os.chown(conf, 12345, 12345)                      # a root test run: hand the file to somebody else
+        with self.assertRaisesRegex(RuntimeError, 'must be root-owned'):
+            check_conf(conf)
+
+    def test_a_file_owned_by_the_trusted_user_is_read(self):
+        from undervolt_control import check_conf
+        conf = self.make_conf()
+        with patch('undervolt_control.TRUSTED_UID', os.getuid()):
+            self.assertIn('undervolt 0', check_conf(conf))
+
+    def test_group_or_world_writable_files_are_refused_even_for_the_trusted_owner(self):
+        from undervolt_control import check_conf
+        for mode in (0o664, 0o646, 0o666):
+            with self.subTest(mode=oct(mode)):
+                conf = self.make_conf(mode)
+                with patch('undervolt_control.TRUSTED_UID', os.getuid()):
+                    with self.assertRaisesRegex(RuntimeError, 'not group/world writable'):
+                        check_conf(conf)
+
+
 class ProfileMigrationTests(unittest.TestCase):
     def test_v1_migrates_battery_fields_without_deleting_profiles(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -164,6 +211,11 @@ class ProfileMigrationTests(unittest.TestCase):
 
 # Additional regression coverage for unattended profile changes and cleanup.
 class UndervoltRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('undervolt_control.TRUSTED_UID', os.getuid())      # see UndervoltTests.setUp
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_preserve_manual_changes_when_uninstalling(self):
         from undervolt_control import uninstall_restore
         with tempfile.TemporaryDirectory() as directory:

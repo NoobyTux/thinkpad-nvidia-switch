@@ -30,6 +30,8 @@ shellcheck --severity=warning install.sh uninstall.sh src/*.sh   # if installed
 ruff check .                                                      # if installed; rules come from pyproject.toml and match CI
 ```
 
+**Run the tests as an ordinary user, not as root.** CI does, and a test that quietly depends on root (file ownership and permission checks behave differently for root) passes on your machine and fails there.
+
 The tests that open the real window need PySide6 and run offscreen (`QT_QPA_PLATFORM=offscreen`); they skip themselves when PySide6 or Qt's system libraries (for example `libegl1`) are missing. Interface changes should be checked at several window widths and with every tab selected: no blank frame below a tab's content and no clipped or overlapping controls (`tests/test_regressions.py` shows how). Interface code must not cause continuous repainting: never call `invalidate()` or `updateGeometry()` from a `sizeHint()`, and apply a style sheet or re-polish a widget only when its state actually changes. `IdleCpuUseTests` fails when an idle visible window keeps repainting.
 
 All automated tests must be hardware-independent, use mock sysfs/PCI state, and never modify a contributor's actual CPU/GPU, system files or `/var/lib/` data.
