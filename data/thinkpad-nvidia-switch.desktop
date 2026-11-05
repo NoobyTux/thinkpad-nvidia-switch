@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ThinkPad Nvidia Switch
+Comment=Manage NVIDIA GPU power state and monitor battery discharge
+Exec="APP_PYTHON" "APP_INSTALL_DIR/src/optimus_tray.py"
+Icon=thinkpad-nvidia-switch
+Terminal=false
+Categories=System;Utility;
+StartupWMClass=ThinkPad Nvidia Switch

@@ -1,0 +1,47 @@
+name: Compatibility report
+description: Tell us what worked (or did not) on your laptop. This builds the tested-hardware list.
+title: "[Hardware] "
+labels: [compatibility]
+body:
+  - type: markdown
+    attributes:
+      value: "A short report is enough, successes are as useful as failures. Do not paste logs unless they are redacted (usernames, paths, PIDs)."
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: "2.6.9"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Laptop model, processor and NVIDIA GPU
+      placeholder: Lenovo Y520, i5-7300HQ, GeForce GTX 1060 Mobile
+    validations:
+      required: true
+  - type: input
+    id: software
+    attributes:
+      label: Distribution, kernel, desktop (session type) and NVIDIA driver branch
+      placeholder: CachyOS, Linux 7.3, KDE Plasma 6.8 Wayland, nvidia 580xx
+    validations:
+      required: true
+  - type: checkboxes
+    id: worked
+    attributes:
+      label: What worked
+      options:
+        - label: Installed without errors
+        - label: Turn NVIDIA OFF reached D3cold (the dashboard shows D3cold)
+        - label: Turn NVIDIA ON woke the GPU again
+        - label: CPU cores / speed limit / power limits (PL1, PL2)
+        - label: Voltage offsets (intel-undervolt)
+        - label: Power profiles and automatic AC/battery switching
+        - label: Battery readings
+        - label: Uninstall restored everything
+  - type: textarea
+    id: notes
+    attributes:
+      label: What did not work, and anything unusual
+      description: For example the GPU stayed in D0, an external monitor is wired to NVIDIA, a message that confused you.

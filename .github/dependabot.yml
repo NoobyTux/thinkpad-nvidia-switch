@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Keep the pinned GitHub Actions in the CI workflow current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

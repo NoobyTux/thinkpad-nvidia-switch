@@ -1,0 +1,15 @@
+[Unit]
+Description=Capture initial platform CPU RAPL limits for ThinkPad Nvidia Switch
+Documentation=man:systemd.service(5)
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+ConditionPathExists=/sys/class/powercap
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/thinkpad-nvidia-switch-cpu-helper firmware-boot-capture
+TimeoutStartSec=15
+
+[Install]
+WantedBy=basic.target

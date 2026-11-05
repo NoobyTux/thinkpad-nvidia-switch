@@ -1,0 +1,63 @@
+name: Bug report
+description: Report an unexpected app behavior (never include private logs or secrets)
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Please test on a non-critical system where possible. Redact usernames, paths, PIDs, or other private information before sharing logs. Do not use this form for security vulnerabilities; see SECURITY.md."
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: The number after "Application v" in the start-up line of View activity log, or the version of the release you installed
+      placeholder: "2.6.9"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Laptop model and processor
+      placeholder: ThinkPad T440p, i7-4710MQ
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Linux distribution, kernel and desktop environment
+      placeholder: CachyOS, Linux kernel version, KDE Plasma Wayland
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: NVIDIA GPU and driver version
+      placeholder: GeForce GT 730M, 470.xx
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Graphics mode of the laptop
+      description: Set in the BIOS/UEFI on many laptops. The app is meant for hybrid (Optimus) mode, where the built-in display is driven by the Intel GPU.
+      options:
+        - Hybrid / Optimus (Intel drives the built-in display)
+        - Discrete only / NVIDIA drives the display
+        - Not sure
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: Describe which settings were enabled and what you did
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+      placeholder: Include the difference between what you expected and observed
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs (optional)
+      description: Paste only the minimal relevant lines after removing personal or sensitive data

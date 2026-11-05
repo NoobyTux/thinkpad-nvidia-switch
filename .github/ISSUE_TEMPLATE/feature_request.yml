@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest a new feature, compatibility improvement, or interface change
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should the app do?
+      placeholder: Explain the desired behavior and why it matters
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Compatibility and safety concerns
+      placeholder: Mention GPU/CPU details, privilege requirements or possible failure modes

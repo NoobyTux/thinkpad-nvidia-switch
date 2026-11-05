@@ -1,0 +1,7 @@
+# Tooling configuration only. The application is installed with install.sh, not with pip.
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+# The same rules CI enforces: pyflakes (unused names, undefined names, ...) and syntax errors.
+select = ["F", "E9"]
