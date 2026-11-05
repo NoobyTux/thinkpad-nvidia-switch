@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Project
+
+- **One test depended on the machine it ran on.** `test_unreadable_state_directory_does_not_break_status_checks` expects no guard files, but on a laptop where the app is installed with the aggressive guard on, `/etc/modprobe.d/optimus-tray-probe-guard.conf` exists and the test failed (found when the maintainer ran the suite on a real installation). The test now points the app's two guard-file paths at files that do not exist. The app itself is unaffected.
+
 ## 2.6.9 — Audit release: layout fix, security hardening, fresh-install fixes (2026-11-05)
 
 ### Security

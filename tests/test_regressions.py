@@ -168,6 +168,9 @@ class WindowBehaviourTests(unittest.TestCase):
                     raise PermissionError(13, 'Permission denied', str(self))
                 return real(self, *a, **k)
             t.PCI = Path(home) / 'no-such-pci-device'     # independent of the host's hardware
+            # ... and of an installation of the app on the machine running the tests (its guard files are real)
+            t.BASIC_BLOCK_FILE = Path(home) / 'no-such-basic-guard.conf'
+            t.AGGRESSIVE_BLOCK_FILE = Path(home) / 'no-such-aggressive-guard.conf'
             with patch.object(Path, 'exists', exists):
                 ctrl = t.Controller()
                 result['any_blocked'] = ctrl.any_blocked()
