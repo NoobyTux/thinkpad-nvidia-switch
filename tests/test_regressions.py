@@ -912,6 +912,8 @@ class RootHelperEnvironmentTests(unittest.TestCase):
 
 class StateFilePermissionTests(unittest.TestCase):
     def setUp(self):
+        previous = os.umask(0o022)              # the root helper runs with at least this umask (sudo enforces it)
+        self.addCleanup(os.umask, previous)     # and the test must not depend on the umask of whoever runs it
         import importlib.util
         spec = importlib.util.spec_from_file_location('tpns_cp_perm', SRC / 'cpu_power.py')
         self.cp = importlib.util.module_from_spec(spec)
@@ -1047,9 +1049,32 @@ class IdleCpuUseTests(unittest.TestCase):
                     wait(2.0)
                     result['per_second'] = (counts['paint'] + counts['layout']) / 2.0
                 ''')
-                # the loop produced thousands of events a second; a healthy window does a handful
-                # (the once-a-second refresh may legitimately repaint a label)
-                self.assertLess(r['per_second'], 40, r)
+                # the loop produced hundreds of events a second; a healthy window does almost none
+                # (the once-a-second refresh may legitimately repaint a label whose text changed)
+                self.assertLess(r['per_second'], 15, r)
+
+    def test_refreshing_unchanged_cpu_readings_does_not_repaint_or_relayout_the_page(self):
+        # refresh_cpu() runs every second. Re-setting a spin box range/value or a label text to what it
+        # already is still repaints and re-lays-out the whole CPU page in Qt (about 40 events per tick).
+        r = self.scenario('''
+            t.topology_status = lambda: {'available': True, 'active_cores': 4, 'total_cores': 4,
+                                         'active_threads': 8, 'total_threads': 8}
+            t.limits_status = lambda: {'available': True, 'pl1': 37.0, 'pl2': 47.0}
+            t.frequency_status = lambda: {'available': True, 'min_mhz': 800, 'max_mhz': 3500,
+                                          'current_mhz': 3500, 'mixed': False, 'reason': ''}
+            t.core_control_status = lambda: {'available': True, 'maximum': 3, 'disabled': 0,
+                                             'can_restore': False, 'reason': ''}
+            t.public_firmware_boot_limits = lambda: {'pl1': 37e6, 'pl2': 47e6}
+            w.tabs.setCurrentIndex(1); wait(1.0)
+            w.timer.stop()                                   # only the explicit calls below refresh
+            w.refresh_cpu(); wait(0.6)                       # the first call may legitimately set the values
+            spy = Spy(); app.installEventFilter(spy)
+            for _ in range(5):
+                w.refresh_cpu()
+            wait(0.6)
+            result['events'] = counts['paint'] + counts['layout']
+        ''')
+        self.assertLess(r['events'], 5, r)
 
     def test_the_size_hint_getter_has_no_side_effects(self):
         source = (SRC / 'optimus_tray.py').read_text()

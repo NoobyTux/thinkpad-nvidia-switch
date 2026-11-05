@@ -10,7 +10,9 @@ permissions:
 jobs:
   checks:
     name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Pinned on purpose: "ubuntu-latest" moved to Ubuntu 26.04, for which GitHub publishes no Python 3.9
+    # ("The version '3.9' ... was not found for Ubuntu 26.04"). The project still supports Python 3.9.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

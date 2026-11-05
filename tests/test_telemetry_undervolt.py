@@ -67,8 +67,15 @@ class BatteryTelemetryTests(unittest.TestCase):
             self.assertEqual(battery_snapshot(root)['to_full'], 'Fully charged')
 
 
+def standard_umask(test):
+    """Run a test as if the umask were 022, whatever the account running it uses (some systems default to 002)."""
+    previous = os.umask(0o022)
+    test.addCleanup(os.umask, previous)
+
+
 class UndervoltTests(unittest.TestCase):
     def setUp(self):
+        standard_umask(self)
         # The helper only edits a root-owned file; these tests build their own files as whoever runs them
         # (an ordinary user on CI), so that user counts as trusted here. The next class proves the real rule.
         patcher = patch('undervolt_control.TRUSTED_UID', os.getuid())
@@ -212,6 +219,7 @@ class ProfileMigrationTests(unittest.TestCase):
 # Additional regression coverage for unattended profile changes and cleanup.
 class UndervoltRecoveryTests(unittest.TestCase):
     def setUp(self):
+        standard_umask(self)
         patcher = patch('undervolt_control.TRUSTED_UID', os.getuid())      # see UndervoltTests.setUp
         patcher.start()
         self.addCleanup(patcher.stop)

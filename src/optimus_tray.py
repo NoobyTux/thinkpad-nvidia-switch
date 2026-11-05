@@ -418,6 +418,24 @@ def dark_palette():
     return palette
 
 
+def _set_text(widget, text):
+    """setText() only when the text differs: Qt repaints (and may re-lay-out) even for an identical string."""
+    if widget.text() != text:
+        widget.setText(text)
+
+
+def _set_spin_range(spin, minimum, maximum):
+    """setRange() only when the range differs: an identical range still re-lays-out the whole page."""
+    if spin.minimum() != minimum or spin.maximum() != maximum:
+        spin.setRange(minimum, maximum)
+
+
+def _set_spin_value(spin, value):
+    """setValue() only when the value differs (an identical value still repaints the spin box)."""
+    if spin.value() != value:
+        spin.setValue(value)
+
+
 def _set_gpu_state_color(label, state):
     state_lower = str(state).strip().lower()
     if state == 'D0':
@@ -2853,9 +2871,9 @@ class MainWindow(QMainWindow):
         info = topology_status()
         limits = limits_status()
         if info['available']:
-            self.cpu_state_label.setText(f"{info['active_cores']}/{info['total_cores']} physical cores · {info['active_threads']}/{info['total_threads']} threads")
+            _set_text(self.cpu_state_label, f"{info['active_cores']}/{info['total_cores']} physical cores · {info['active_threads']}/{info['total_threads']} threads")
         else:
-            self.cpu_state_label.setText('CPU core information unavailable')
+            _set_text(self.cpu_state_label, 'CPU core information unavailable')
         freq = frequency_status()
         if limits['available']:
             detail = f"Long-term {limits['pl1']:.1f} W  ·  Boost {limits['pl2']:.1f} W"
@@ -2864,33 +2882,33 @@ class MainWindow(QMainWindow):
         if freq['available']:
             detail += ('  ·  Different speed limits' if freq['mixed']
                        else f"  ·  Max {freq['current_mhz']} MHz")
-        self.cpu_limits_label.setText(detail)
+        _set_text(self.cpu_limits_label, detail)
         if freq['available']:
             self.frequency_spin.blockSignals(True)
-            self.frequency_spin.setRange(freq['min_mhz'], freq['max_mhz'])
+            _set_spin_range(self.frequency_spin, freq['min_mhz'], freq['max_mhz'])
             if not self.frequency_controls_dirty and freq['current_mhz'] is not None:
-                self.frequency_spin.setValue(freq['current_mhz'])
+                _set_spin_value(self.frequency_spin, freq['current_mhz'])
             self.frequency_spin.blockSignals(False)
-            self.frequency_desc.setText(
+            _set_text(self.frequency_desc,
                 f"Choose a speed between {freq['min_mhz']} and {freq['max_mhz']} MHz. "
                 + ('The enabled cores have different speed limits.' if freq['mixed'] else
                    'Changing this does not change the CPU power limits.'))
         else:
-            self.frequency_desc.setText(freq['reason'])
+            _set_text(self.frequency_desc, freq['reason'])
         self.frequency_spin.setEnabled(freq['available'])
         self.apply_frequency_button.setEnabled(freq['available'])
         self.restore_frequency_button.setEnabled(freq['available'])
         core = core_control_status()
         can_change = bool(core['available'] and core['maximum'] >= 1)
         self.core_count_spin.blockSignals(True)
-        self.core_count_spin.setRange(0, max(0, core['maximum']))
+        _set_spin_range(self.core_count_spin, 0, max(0, core['maximum']))
         if not self.core_count_dirty:
-            self.core_count_spin.setValue(core['disabled'])
+            _set_spin_value(self.core_count_spin, core['disabled'])
         self.core_count_spin.blockSignals(False)
         self.core_count_spin.setEnabled(can_change)
         self.apply_cores_button.setEnabled(can_change and self.core_count_spin.value() != core['disabled'])
         self.restore_cores_button.setEnabled(core['can_restore'])
-        self.cores_desc.setText(
+        _set_text(self.cores_desc,
             (f"{info['total_cores']-core['disabled']} of {info['total_cores']} physical cores are on. "
              f"You can turn off up to {core['maximum']} cores. "
              'All threads of a chosen core change together; the first core stays on.')
@@ -2899,12 +2917,12 @@ class MainWindow(QMainWindow):
         defaults = public_firmware_boot_limits()
         self.restore_limits_button.setEnabled(limits['available'] and defaults is not None)
         if defaults:
-            self.cpu_info_label.setText(
+            _set_text(self.cpu_info_label,
                 f"Power limits recorded at startup: long-term {defaults['pl1']/1e6:.1f} W · "
                 f"short boost {defaults['pl2']/1e6:.1f} W. Restore uses these recorded values, "
                 "not the previous settings. Other power tools may change them.")
         else:
-            self.cpu_info_label.setText(
+            _set_text(self.cpu_info_label,
                 'Startup power limits have not been recorded. Reboot once after installation. '
                 'The Restore button stays unavailable until real startup values are captured.')
         if limits['available'] and not self.power_controls_dirty:
