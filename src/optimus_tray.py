@@ -1366,9 +1366,12 @@ class ProfileEditor(QDialog):
         form.addRow('NVIDIA power', self.gpu_state)
         self.basic = QCheckBox('Basic protection — stop NVIDIA driver auto-loading')
         self.basic.setChecked(settings['basic_guard'])
+        self.basic.setToolTip('Switching a protection on also puts the NVIDIA GPU to sleep. With "Leave GPU power state unchanged" '
+                              'it is only switched on when the GPU is already asleep; an awake GPU is never switched off by it.')
         form.addRow(self.basic)
         self.aggressive = QCheckBox('Stronger protection — block background GPU checks')
         self.aggressive.setChecked(settings['aggressive_guard'])
+        self.aggressive.setToolTip(self.basic.toolTip())
         form.addRow(self.aggressive)
         self.sleep_apps = QCheckBox('Put NVIDIA back to sleep after NVIDIA apps close')
         self.sleep_apps.setChecked(settings['auto_gpu_sleep'])

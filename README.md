@@ -208,7 +208,7 @@ A profile is a named setup (any number; names are unique, case-insensitive, up t
 | Setting | Behavior when the profile is applied |
 |---|---|
 | NVIDIA power | Leave unchanged, put to sleep (`D3cold`), or wake (`D0`). `D0` cannot be combined with a protection |
-| Basic / Stronger protection | Enabled or disabled as chosen. **Enabling a protection also unloads NVIDIA and puts the GPU to sleep**, even when "leave unchanged" is selected |
+| Basic / Stronger protection | Disabled when not ticked. Enabling a protection also unloads NVIDIA and puts the GPU to sleep, so with *Put to sleep* it is enabled as chosen, and with *Leave unchanged* it is enabled only if the GPU is already asleep. While the GPU is on, a protection that is already on stays on and one that is not on is **not** switched on (the log says so), so the GPU is never switched off behind your back |
 | Auto-sleep | Sets the *Put NVIDIA back to sleep after NVIDIA apps close* option |
 | CPU cores, CPU speed, PL1/PL2 | Each is optional; an unchecked setting is left alone, which suits CPUs without RAPL or hotplug |
 | Voltage offsets | Optional and off by default; all three are set together |

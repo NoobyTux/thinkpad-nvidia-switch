@@ -28,6 +28,19 @@ SPEED_LATE_RETRY_DELAYS = (3.0, 5.0)
 # Prefix of the audit lines the GPU helper writes to stderr (see optimus_helper.detail()).
 DETAIL_PREFIX = 'TPNS_DETAIL|'
 
+# Where the GPU helper keeps its guards (optimus_helper.py: BASIC_CONFIG, AGGRESSIVE_CONFIG and the recovery records
+# that count as an active aggressive guard). A test keeps these lists identical to the helper's own.
+PCI_DEVICES = Path('/sys/bus/pci/devices')
+STATE_DIR = Path('/var/lib/thinkpad-nvidia-switch')
+BASIC_GUARD_FILES = (Path('/etc/modprobe.d/optimus-tray-block.conf'),)
+AGGRESSIVE_GUARD_FILES = (
+    Path('/etc/modprobe.d/optimus-tray-probe-guard.conf'),
+    STATE_DIR / 'nvidia-modprobe-modes.json',
+    STATE_DIR / 'nvidia-discovery-modes.json',
+    STATE_DIR / 'pci-driver-override.json',
+    STATE_DIR / 'pci-config-mask.json',
+)
+
 # sudo keeps the *caller's* PATH unless the distribution sets secure_path. These
 # helpers run as root on behalf of an unprivileged user, so they must never look
 # anything up in an inherited, user-controlled PATH (a planted "modprobe" would
@@ -47,6 +60,26 @@ def decode_payload(encoded):
         raise ValueError('Malformed profile payload.') from exc
 
 
+def gpu_is_asleep(gpu_address):
+    """True only when the kernel reports D3cold. If the state cannot be read, say "awake": the profile then
+    never switches off a GPU it was not asked to switch off."""
+    try:
+        return (PCI_DEVICES / gpu_address / 'power_state').read_text(encoding='utf-8').strip().lower() == 'd3cold'
+    except (OSError, UnicodeError):
+        return False
+
+
+def guard_is_on(kind):
+    files = BASIC_GUARD_FILES if kind == 'basic' else AGGRESSIVE_GUARD_FILES
+    for path in files:
+        try:
+            if path.exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def apply_settings(settings, gpu_address, run=subprocess.run, sleep=time.sleep, warnings=None):
     """Apply a *validated* configuration group by group and report every failure.
 
@@ -59,6 +92,10 @@ def apply_settings(settings, gpu_address, run=subprocess.run, sleep=time.sleep, 
     what had already been applied. A step that succeeded but printed a "Warning:" line
     (for example: cores changed, but the old speed cap could not be re-applied) adds
     that text to ``warnings`` when a list is passed in.
+
+    "Leave the GPU power state unchanged" really leaves it: switching a guard ON also unloads the NVIDIA
+    driver and puts the GPU to sleep, so while the GPU is awake such a profile does not switch guards on
+    (a guard that is already on stays on; one that was asked for but is not on is reported as a warning).
     """
     settings = validate_settings(settings)
     if not re.fullmatch(r'[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]', gpu_address):
@@ -136,8 +173,23 @@ def apply_settings(settings, gpu_address, run=subprocess.run, sleep=time.sleep, 
                 gpu('gpu-off')
             # Disable stale guards before enabling the profile's chosen combination.
             # The actions are idempotent in the underlying NVIDIA helper.
-            gpu('aggressive-block-on' if settings['aggressive_guard'] else 'aggressive-block-off')
-            gpu('basic-block-on' if settings['basic_guard'] else 'basic-block-off')
+            awake = None                                    # looked at only when a guard is to be switched on
+            for kind in ('aggressive', 'basic'):
+                action = f'{kind}-block-on'
+                if not settings[f'{kind}_guard']:
+                    gpu(f'{kind}-block-off')                # never changes the power state
+                    continue
+                if settings['gpu_state'] == 'keep':
+                    if awake is None:
+                        awake = not gpu_is_asleep(gpu_address)
+                    if awake:
+                        # '-block-on' unloads the driver and powers the GPU off: not "unchanged". Skip it.
+                        if not guard_is_on(kind):
+                            if warnings is not None:
+                                warnings.append(f'{action}: not applied, because it would put the NVIDIA GPU to sleep '
+                                                'and this profile leaves the GPU power state unchanged (the GPU is on).')
+                        continue
+                gpu(action)
     except RuntimeError as exc:
         failures.append(str(exc))
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **"Leave GPU power state unchanged" no longer switches the GPU off.** A profile with that choice and *Basic protection* (or *Stronger protection*) ticked put an awake NVIDIA GPU to sleep when it was applied, for example when the charger was plugged in: the helper action that switches a protection on also unloads the driver and powers the GPU off. While the GPU is awake, such a profile now leaves it alone: a protection that is already on stays on, one that is not on is not switched on (the log says so), and unticked protections are still switched off. When the GPU is asleep the protections are switched on as before, and *Put to sleep* and *Wake* behave as before. The profile editor explains this in a tooltip. The README previously described the old behaviour as intended; that row is corrected.
+
 ### Project
 
 - **One test depended on the machine it ran on.** `test_unreadable_state_directory_does_not_break_status_checks` expects no guard files, but on a laptop where the app is installed with the aggressive guard on, `/etc/modprobe.d/optimus-tray-probe-guard.conf` exists and the test failed (found when the maintainer ran the suite on a real installation). The test now points the app's two guard-file paths at files that do not exist. The app itself is unaffected.

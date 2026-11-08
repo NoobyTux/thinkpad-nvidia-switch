@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 import sys
@@ -185,6 +185,100 @@ class ProfilesTests(unittest.TestCase):
         tray = (ROOT / 'src/optimus_tray.py').read_text()
         self.assertIn('friendly_profile_failure(details)', tray)
         self.assertIn('PROFILE APPLY: name=', tray)
+
+
+class LeaveGpuUnchangedTests(unittest.TestCase):
+    """"Leave GPU power state unchanged" must not switch the GPU off.
+
+    Reported on a laptop: an automatic profile with "Leave GPU power state unchanged" and "Basic protection"
+    ticked put the awake NVIDIA GPU to sleep when the charger was plugged in, because the helper action that
+    switches a guard on also unloads the driver and powers the GPU off.
+    """
+
+    def settings(self, basic=True, aggressive=False):
+        s = valid_settings()
+        s.update(gpu_state='keep', basic_guard=basic, aggressive_guard=aggressive,
+                 disabled_cores=None, frequency_mhz=None, pl1_w=None, pl2_w=None)
+        return s
+
+    def apply(self, settings, asleep, guards_on=()):
+        calls, warnings = [], []
+
+        def run(cmd, **_kwargs):
+            calls.append(cmd[1])
+            return Mock(returncode=0, stderr='', stdout='')
+
+        with patch.object(helper, 'gpu_is_asleep', return_value=asleep), \
+                patch.object(helper, 'guard_is_on', side_effect=lambda kind: kind in guards_on):
+            applied = helper.apply_settings(settings, '0000:01:00.0', run=run, sleep=lambda _s: None, warnings=warnings)
+        return applied, calls, warnings
+
+    def test_an_awake_gpu_is_not_put_to_sleep_by_a_guard(self):
+        applied, calls, warnings = self.apply(self.settings(basic=True), asleep=False)
+        self.assertNotIn('basic-block-on', calls)
+        self.assertNotIn('gpu-off', calls)
+        self.assertEqual(calls, ['aggressive-block-off'])            # the unticked guard may still be switched off
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('basic-block-on: not applied', warnings[0])
+        self.assertIn('leaves the GPU power state unchanged', warnings[0])
+
+    def test_both_guards_are_skipped_while_the_gpu_is_awake(self):
+        _applied, calls, warnings = self.apply(self.settings(basic=True, aggressive=True), asleep=False)
+        self.assertEqual(calls, [])
+        self.assertEqual(len(warnings), 2)
+
+    def test_a_guard_that_is_already_on_is_left_alone_without_a_warning(self):
+        _applied, calls, warnings = self.apply(self.settings(basic=True), asleep=False, guards_on=('basic',))
+        self.assertNotIn('basic-block-on', calls)
+        self.assertEqual(warnings, [])
+
+    def test_a_sleeping_gpu_gets_its_guards_as_asked(self):
+        _applied, calls, warnings = self.apply(self.settings(basic=True, aggressive=True), asleep=True)
+        self.assertEqual(calls, ['aggressive-block-on', 'basic-block-on'])
+        self.assertEqual(warnings, [])
+
+    def test_unticked_guards_are_still_switched_off_whatever_the_gpu_does(self):
+        for asleep in (True, False):
+            _applied, calls, warnings = self.apply(self.settings(basic=False), asleep=asleep)
+            self.assertEqual(calls, ['aggressive-block-off', 'basic-block-off'])
+            self.assertEqual(warnings, [])
+
+    def test_the_other_gpu_choices_are_unchanged(self):
+        s = valid_settings()
+        s.update(disabled_cores=None, frequency_mhz=None, pl1_w=None, pl2_w=None, gpu_state='D3cold',
+                 basic_guard=True, aggressive_guard=False)
+        _applied, calls, _warnings = self.apply(s, asleep=False)
+        self.assertEqual(calls, ['gpu-off', 'aggressive-block-off', 'basic-block-on'])   # asked to sleep: it does
+        s.update(gpu_state='D0', basic_guard=False)
+        _applied, calls, _warnings = self.apply(s, asleep=True)
+        self.assertEqual(calls, ['aggressive-block-off', 'basic-block-off', 'gpu-on'])
+
+    def test_the_power_state_is_read_from_the_kernel_and_unknown_means_awake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            devices = Path(directory)
+            (devices / '0000:01:00.0').mkdir()
+            with patch.object(helper, 'PCI_DEVICES', devices):
+                self.assertFalse(helper.gpu_is_asleep('0000:01:00.0'))               # no power_state file
+                for text, expected in (('D3cold\n', True), ('D0\n', False), ('D3hot\n', False), ('\n', False)):
+                    (devices / '0000:01:00.0' / 'power_state').write_text(text)
+                    self.assertEqual(helper.gpu_is_asleep('0000:01:00.0'), expected, text)
+
+    def test_guard_files_match_the_gpu_helper(self):
+        # profile_apply_helper cannot import the GPU helper (it is installed without a .py name), so the two
+        # lists of guard files are copied; this keeps them from drifting apart.
+        source = (ROOT / 'src' / 'optimus_helper.py').read_text()
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader('tpns_gpu_helper_for_test', str(ROOT / 'src' / 'optimus_helper.py'))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        gpu_helper = importlib.util.module_from_spec(spec)
+        loader.exec_module(gpu_helper)
+        self.assertEqual(helper.BASIC_GUARD_FILES, (gpu_helper.BASIC_CONFIG,))
+        self.assertEqual(helper.AGGRESSIVE_GUARD_FILES,
+                         (gpu_helper.AGGRESSIVE_CONFIG, gpu_helper.NVIDIA_MODPROBE_STATE, gpu_helper.DISCOVERY_STATE,
+                          gpu_helper.DRIVER_OVERRIDE_STATE, gpu_helper.PCI_MASK_STATE))
+        self.assertEqual(helper.PCI_DEVICES, gpu_helper.PCI_BASE)
+        self.assertIn("'basic-block-on'", source)                                    # the action this guards against
 
 
 if __name__ == '__main__':
