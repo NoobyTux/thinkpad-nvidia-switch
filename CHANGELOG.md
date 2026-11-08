@@ -1,15 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-
-- **"Leave GPU power state unchanged" no longer switches the GPU off.** A profile with that choice and *Basic protection* (or *Stronger protection*) ticked put an awake NVIDIA GPU to sleep when it was applied, for example when the charger was plugged in: the helper action that switches a protection on also unloads the driver and powers the GPU off. While the GPU is awake, such a profile now leaves it alone: a protection that is already on stays on, one that is not on is not switched on (the log says so), and unticked protections are still switched off. When the GPU is asleep the protections are switched on as before, and *Put to sleep* and *Wake* behave as before. The profile editor explains this in a tooltip. The README previously described the old behaviour as intended; that row is corrected.
-
-### Project
-
-- **One test depended on the machine it ran on.** `test_unreadable_state_directory_does_not_break_status_checks` expects no guard files, but on a laptop where the app is installed with the aggressive guard on, `/etc/modprobe.d/optimus-tray-probe-guard.conf` exists and the test failed (found when the maintainer ran the suite on a real installation). The test now points the app's two guard-file paths at files that do not exist. The app itself is unaffected.
-
 ## 2.6.9 — Audit release: layout fix, security hardening, fresh-install fixes (2026-11-05)
 
 ### Security
@@ -25,6 +15,7 @@
 
 ### Fixed
 
+- **"Leave GPU power state unchanged" no longer switches the GPU off.** A profile with that choice and *Basic protection* (or *Stronger protection*) ticked put an awake NVIDIA GPU to sleep when it was applied, for example when the charger was plugged in: the helper action that switches a protection on also unloads the driver and powers the GPU off. While the GPU is awake, such a profile now leaves it alone: a protection that is already on stays on, one that is not on is not switched on (the log says so), and unticked protections are still switched off. When the GPU is asleep the protections are switched on as before, and *Put to sleep* and *Wake* behave as before. The profile editor explains this in a tooltip. The README previously described the old behaviour as intended; that row is corrected.
 - **The CPU tab repainted and re-laid-out itself every second while idle** (about 40 events a second, found when the idle-window test hit its limit on GitHub's CI runner). The once-a-second refresh set the speed and core-count spin boxes' ranges and values and several labels to what they already were, and Qt repaints and re-lays-out the page for that. These setters now change a widget only when the new value differs; an idle visible window does close to nothing on every tab. A new test refreshes unchanged CPU readings repeatedly and checks that nothing is repainted, and the idle-window limit is now 15 events a second instead of 40.
 - **Automatic profiles could apply only the first step.** Root cause, found from a user's log: after the cores were switched, the helper re-applied the previous CPU speed cap, and the kernel refused it for one policy (`policy4 rejected frequency cap (3500000 kHz read back)`). That follow-up failure made `cores-set` exit with an error although the cores had already changed, and the profile executor then stopped at that "failed" step, leaving the speed limit, voltage offsets and NVIDIA settings unapplied. Because a failure of an *automatic* apply was only written to the log, it looked as if the profile "only disables 2 cores" (applying it by hand later worked, since nothing had to be re-applied). Now re-applying the old cap after a core change is best-effort: the core change reports success with a warning (shown in the activity log and carried into the profile result), and the profile continues. In addition, the executor no longer stops at the first problem: every independent group (cores, speed, power limits, voltage, NVIDIA) is attempted even if another failed; a failed CPU step is retried once after 1.5 s; the report names every failed step and what was applied; a failed automatic apply shows a tray warning, puts the reason in the *Power profile* tooltip and is retried once after 10 s (never in a loop).
 - A second log from the same laptop showed the speed cap being refused for the first seconds after the charger was unplugged (`policy0 rejected frequency cap (3500000 kHz read back)`, then accepted on the automatic retry 10 s later). The cause on that system is not known yet, so the app now (a) waits and rewrites a refused cap (four short, growing pauses, about two seconds in total, and none at all when the first read is right) before giving up, (b) tries a still-refused speed cap twice more *after* the profile's other steps (3 s and 5 s later) instead of holding them up, and (c) writes a `SPEED LIMIT DIAGNOSTICS` snapshot to the technical log when a cap is refused (driver, governor, per-policy min/max, intel_pstate settings, known power tools that are running).
@@ -66,6 +57,7 @@
 
 ### Project
 
+- **One test depended on the machine it ran on.** `test_unreadable_state_directory_does_not_break_status_checks` expects no guard files, but on a laptop where the app is installed with the aggressive guard on, `/etc/modprobe.d/optimus-tray-probe-guard.conf` exists and the test failed (found when the maintainer ran the suite on a real installation). The test now points the app's two guard-file paths at files that do not exist. The app itself is unaffected.
 - Added SPDX licence identifiers, a pull-request template, a broader `.gitignore`, ShellCheck and Ruff in CI, a Python 3.9/3.11/3.13 test matrix and an offscreen Qt test job.
 - New regression tests (`tests/test_regressions.py`) run the real window offscreen and cover every fix above; each was verified to fail on v2.6.8.
 - README rewritten against the code. *Requirements* is split into required and optional parts and the Arch/CachyOS install commands now include `intel-undervolt` (the package was only named in a table row, so following the commands never installed it). *Install*, *Upgrade* and *Uninstall* are separate sections with their own entries in the table of contents; *Uninstall* lists what is restored, what is removed, and that packages are left for you to remove (with the command, and the order that matters for `intel-undervolt`).
