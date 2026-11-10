@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.7.0 — Time since unplugged, clearer core option (2026-11-10)
+
+### Added
+
+- **Time since unplugged.** The battery card shows, at its top right, how long ago the charger was last unplugged: *Unplugged 1:23:45 ago*, counting up every second; after plugging in it reads *Last unplugged … ago* and keeps counting. Linux does not record when the power source changed, so the time starts when the app sees the change (it checks every two seconds). If the app started while the laptop was already on battery, or was not running for a while, it says *at least*. The moment is saved in `~/.config/thinkpad-nvidia-switch/unplug-timer.json` (private, written only when something changes plus once a minute), so restarting the app, for example after an upgrade, does not reset it; a reboot does. The timer is display-only: if it ever fails, that is logged once and profile switching is not affected. While the window is hidden nothing is updated; opening it catches up at once. `uninstall.sh` removes the file.
+
+### Changed
+
+- **Profile editor wording.** *Change active CPU core count* is now *Physical cores to turn off*, which is what the number has always meant. Text only; nothing about how it works changed.
+
+### Project
+
+- 25 tests for the timer's rules and storage, 8 for its place in the window (text, ticking, hidden window, narrow layout, failure isolation, saved file, idle cost, uninstaller) and 1 for the new label; 281 → 315 automated tests.
+- The README screenshots were re-rendered; they now show the timer.
+
 ## 2.6.9 — Audit release: layout fix, security hardening, fresh-install fixes (2026-11-05)
 
 ### Security

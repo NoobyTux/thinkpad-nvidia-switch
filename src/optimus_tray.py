@@ -15,6 +15,7 @@ from voltage_status import parse_voltage_report, format_voltage_status
 from undervolt_control import MIN_OFFSET_MV, WARN_BELOW_MV, validate_mv
 from notification_rules import notification_settings, gpu_transition_message, power_source_message, gpu_failure_message
 from layout_rules import responsive_columns, selected_tab_height
+from unplug_timer import UnplugTimer
 from profiles import friendly_profile_failure, short_profile_failure, permanent_profile_failure, power_source, read_store, write_store, validate_settings, new_profile, assignment, use_legacy_startup_restore
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QCheckBox, QSystemTrayIcon, QMenu, QMessageBox, QFrame, QComboBox, QDialog, QDialogButtonBox, QTextEdit, QScrollArea, QSizePolicy, QLayout, QTabWidget, QDoubleSpinBox, QSpinBox, QGridLayout, QListWidget, QLineEdit, QFormLayout)
@@ -55,7 +56,7 @@ DRIVER_OVERRIDE_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-driver-overrid
 PCI_MASK_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-config-mask.json')
 DETACHED_MARKER = Path('/var/lib/thinkpad-nvidia-switch/pci-detached.json')
 APP_NAME = 'ThinkPad Nvidia Switch'
-APP_VERSION = '2.6.9'
+APP_VERSION = '2.7.0'
 APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'thinkpad-nvidia-switch.svg'
 ASSET_DIR = Path(__file__).resolve().parent.parent / 'assets'
 CHECKBOX_CHECKMARK = (ASSET_DIR / 'checkbox-checkmark.png').as_posix()
@@ -69,6 +70,7 @@ DETAILED_LOG_FILE = LOG_DIR / 'detailed.log'
 DETAIL_PREFIX = 'TPNS_DETAIL|'
 PREFS_FILE = CONFIG_DIR / 'settings.json'
 PROFILES_FILE = CONFIG_DIR / 'profiles.json'
+UNPLUG_FILE = CONFIG_DIR / 'unplug-timer.json'
 PROFILE_HELPER = Path('/usr/local/libexec/thinkpad-nvidia-switch-profile-apply')
 AUTOSTART_FILE = Path.home() / '.config' / 'autostart' / 'thinkpad-nvidia-switch.desktop'
 INSTALLED_HELPER = Path('/usr/local/libexec/thinkpad-nvidia-switch-helper')
@@ -1377,7 +1379,7 @@ class ProfileEditor(QDialog):
         self.sleep_apps.setChecked(settings['auto_gpu_sleep'])
         form.addRow(self.sleep_apps)
 
-        self.use_cores = QCheckBox('Change active CPU core count')
+        self.use_cores = QCheckBox('Physical cores to turn off')
         self.use_cores.setChecked(settings['disabled_cores'] is not None)
         self.cores = QSpinBox()
         self.cores.setRange(0, 4096)
@@ -1613,7 +1615,17 @@ class MainWindow(QMainWindow):
         self.battery_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.battery_label.setStyleSheet('font-size:15px;font-weight:600;')
         self.battery_label.setWordWrap(True)
-        battery_layout.addWidget(battery_caption)
+        caption_row = QHBoxLayout()
+        caption_row.setSpacing(14)
+        caption_row.addWidget(battery_caption)
+        caption_row.addStretch(1)
+        self.unplug_label = QLabel('Unplugged: checking…')
+        self.unplug_label.setObjectName('muted')
+        self.unplug_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.unplug_label.setToolTip('How long ago the charger was last unplugged. The time is counted from the moment this app '
+                                     'noticed it; "at least" means the app only started watching afterwards.')
+        caption_row.addWidget(self.unplug_label)
+        battery_layout.addLayout(caption_row)
         battery_layout.addWidget(self.battery_label)
         meta_row = QHBoxLayout()
         meta_row.setSpacing(14)
@@ -1959,6 +1971,9 @@ class MainWindow(QMainWindow):
         self.power_candidate = None
         self.power_candidate_count = 0
         self.stable_power_source = None
+        self.power_confirmed = False
+        self.unplug_timer = UnplugTimer(UNPLUG_FILE)
+        self.unplug_timer_failed = False
         self.profile_process = None
         self.profile_running_name = None
         # A manual GPU switch runs in the background so the window keeps animating.
@@ -2610,6 +2625,21 @@ class MainWindow(QMainWindow):
         self.profile_auto_ready = True
         self.check_power_profile()
 
+    def _track_unplugging(self, observed):
+        """Feed the confirmed power source to the unplug timer. It is only a display: it must never get in
+        the way of switching profiles, so a failure is logged once and otherwise ignored."""
+        try:
+            self.unplug_timer.update(observed)
+            self._show_unplug_time()
+        except Exception as exc:
+            if not self.unplug_timer_failed:
+                self.unplug_timer_failed = True
+                log_operation(f'The unplug timer stopped working: {exc}')
+
+    def _show_unplug_time(self):
+        if self.power_confirmed:
+            _set_text(self.unplug_label, self.unplug_timer.describe(self.stable_power_source))
+
     def check_power_profile(self):
         observed = power_source()
         if observed == self.power_candidate:
@@ -2622,7 +2652,9 @@ class MainWindow(QMainWindow):
             return
         previous_source = self.stable_power_source
         self.stable_power_source = observed
+        self.power_confirmed = True
         self.power_source_label.setText('Power: ' + ({'ac': 'Plugged in', 'battery': 'On battery'}.get(observed, 'Not detected')))
+        self._track_unplugging(observed)
         # Never treat the first valid reading after login as unplugging or
         # plugging in; only notify on confirmed transitions between sources.
         self.notify('charger', power_source_message(previous_source, observed))
@@ -2861,6 +2893,8 @@ class MainWindow(QMainWindow):
         # so skip them while the window is hidden in the tray; showEvent() brings them up to date at once.
         if self.isVisible():
             self.battery_label.setText(battery_label_text(battery_snapshot()))
+            if not self.unplug_timer_failed:
+                self._show_unplug_time()
         self.basic_block_box.blockSignals(True); self.basic_block_box.setChecked(basic_blocked); self.basic_block_box.blockSignals(False)
         self.aggressive_block_box.blockSignals(True); self.aggressive_block_box.setChecked(aggressive_blocked); self.aggressive_block_box.blockSignals(False)
         self.tray_basic_block.blockSignals(True); self.tray_basic_block.setChecked(basic_blocked); self.tray_basic_block.blockSignals(False)

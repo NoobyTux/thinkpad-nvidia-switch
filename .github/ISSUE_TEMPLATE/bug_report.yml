@@ -11,7 +11,7 @@ body:
     attributes:
       label: App version
       description: The number after "Application v" in the start-up line of View activity log, or the version of the release you installed
-      placeholder: "2.6.9"
+      placeholder: "2.7.0"
     validations:
       required: true
   - type: input

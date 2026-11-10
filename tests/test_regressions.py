@@ -199,6 +199,26 @@ class WindowBehaviourTests(unittest.TestCase):
         ''')
         self.assertEqual(result, {'duplicate_accepted': False, 'warned': True, 'unique_accepted': True})
 
+    def test_profile_editor_core_option_says_which_cores_it_turns_off(self):
+        # Text only: the option has always been the number of physical cores to turn OFF.
+        result, stderr = run_child('''
+            settings = {'gpu_state': 'keep', 'basic_guard': False, 'aggressive_guard': False,
+                        'auto_gpu_sleep': False, 'disabled_cores': None, 'frequency_mhz': None,
+                        'pl1_w': None, 'pl2_w': None, 'undervolt_cpu_mv': None,
+                        'undervolt_cache_mv': None, 'undervolt_gpu_mv': None}
+            editor = t.ProfileEditor({'name': 'Quiet', 'settings': settings}, taken_names=[])
+            result['text'] = editor.use_cores.text()
+            result['spin_enabled_when_unticked'] = editor.cores.isEnabled()
+            result['unticked'] = editor.settings()['disabled_cores']
+            editor.use_cores.setChecked(True); editor.cores.setValue(2)
+            result['spin_enabled_when_ticked'] = editor.cores.isEnabled()
+            result['ticked'] = editor.settings()['disabled_cores']
+        ''')
+        self.assertNotIn('Traceback', stderr)
+        self.assertEqual(result, {'text': 'Physical cores to turn off', 'spin_enabled_when_unticked': False,
+                                  'unticked': None, 'spin_enabled_when_ticked': True, 'ticked': 2})
+        self.assertNotIn('Change active CPU core count', (SRC / 'optimus_tray.py').read_text())
+
     def test_spin_boxes_and_profile_list_are_styled_dark(self):
         result, _ = run_child('''
             w = t.MainWindow(); w.show(); pump()
@@ -1810,6 +1830,145 @@ class RepeatedVoltageErrorTests(unittest.TestCase):
         self.assertNotIn('Traceback', stderr)
         self.assertEqual(result, {'logged': 1, 'logged_after_new_problem': 2, 'memory': True,
                                   'status': 'Voltage offsets unavailable (the intel-undervolt package is not installed).'})
+
+
+@unittest.skipUnless(QT, 'PySide6 (and its system libraries) is not available')
+class UnplugTimerWindowTests(unittest.TestCase):
+    """The battery card shows how long ago the charger was last unplugged."""
+
+    SETUP = '''
+        import time
+        from PySide6.QtCore import QObject, QEvent
+        t.Controller.state = lambda self: 'D0'
+        t.MainWindow.refresh_undervolt = lambda self: None
+        source = {'now': 'ac'}
+        t.power_source = lambda: source['now']
+        clock = {'now': 1_000_000.0}
+        w = t.MainWindow(); w.resize(960, 900); w.show()
+        w.unplug_timer.clock = lambda: clock['now']
+        def confirm():
+            w.check_power_profile(); w.check_power_profile()
+        def wait(seconds):
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                app.processEvents(); time.sleep(0.005)
+    '''
+
+    def scenario(self, body):
+        result, stderr = run_child(textwrap.dedent(self.SETUP) + '\n' + textwrap.dedent(body))
+        self.assertNotIn('Traceback', stderr)
+        return result
+
+    def test_the_label_follows_unplugging_and_plugging_in(self):
+        r = self.scenario('''
+            result['start'] = w.unplug_label.text()
+            confirm(); result['on_ac'] = w.unplug_label.text()
+            source['now'] = 'battery'; confirm(); result['unplugged'] = w.unplug_label.text()
+            clock['now'] += 3725; w.refresh(); result['later'] = w.unplug_label.text()
+            source['now'] = 'ac'; confirm(); result['plugged'] = w.unplug_label.text()
+            clock['now'] += 60; w.refresh(); result['plugged_later'] = w.unplug_label.text()
+            source['now'] = 'battery'; confirm(); result['again'] = w.unplug_label.text()
+        ''')
+        self.assertEqual(r, {'start': 'Unplugged: checking…', 'on_ac': 'No unplugging seen yet',
+                             'unplugged': 'Unplugged 0:00:00 ago', 'later': 'Unplugged 1:02:05 ago',
+                             'plugged': 'Last unplugged 1:02:05 ago', 'plugged_later': 'Last unplugged 1:03:05 ago',
+                             'again': 'Unplugged 0:00:00 ago'})
+
+    def test_it_says_when_the_power_source_is_unknown(self):
+        r = self.scenario('''
+            source['now'] = None; confirm()
+            result['text'] = w.unplug_label.text()
+        ''')
+        self.assertEqual(r, {'text': 'Unplugged: power source not detected'})
+
+    def test_a_hidden_window_does_not_update_the_label_but_catches_up_when_shown(self):
+        r = self.scenario('''
+            source['now'] = 'battery'; confirm()
+            w.hide(); wait(0.1)
+            clock['now'] += 600; w.refresh()
+            result['hidden'] = w.unplug_label.text()
+            w.show(); wait(0.3)
+            result['shown'] = w.unplug_label.text()
+        ''')
+        # the window started on battery, so the app did not see the unplugging itself: "at least"
+        self.assertEqual(r, {'hidden': 'Unplugged at least 0:00:00 ago', 'shown': 'Unplugged at least 0:10:00 ago'})
+
+    def test_the_time_is_saved_privately_and_survives_a_restart_of_the_window(self):
+        r = self.scenario('''
+            import optimus_tray
+            source['now'] = 'ac'; confirm()
+            clock['now'] += 5; source['now'] = 'battery'; confirm()
+            saved = json.loads(optimus_tray.UNPLUG_FILE.read_text())
+            result['saved'] = [saved['source'], saved['exact'], saved['unplugged_at'] == clock['now']]
+            result['mode'] = oct(optimus_tray.UNPLUG_FILE.stat().st_mode & 0o777)
+            from unplug_timer import UnplugTimer
+            again = UnplugTimer(optimus_tray.UNPLUG_FILE, boot_id=w.unplug_timer.boot_id, clock=lambda: clock['now'] + 30)
+            again.update('battery')
+            result['restarted'] = again.describe('battery')
+        ''')
+        self.assertEqual(r, {'saved': ['battery', True, True], 'mode': '0o600', 'restarted': 'Unplugged 0:00:30 ago'})
+
+    def test_a_broken_timer_never_stops_the_profile_switch(self):
+        r = self.scenario('''
+            def broken(_source):
+                raise RuntimeError('disk on fire')
+            w.unplug_timer.update = broken
+            logged = []
+            t.log_operation = logged.append
+            source['now'] = 'battery'; confirm()
+            confirm()
+            result['stable'] = w.stable_power_source
+            result['label'] = w.power_source_label.text()
+            result['logged'] = [m for m in logged if 'unplug timer' in m]
+            result['failed'] = w.unplug_timer_failed
+        ''')
+        self.assertEqual(r['stable'], 'battery')
+        self.assertEqual(r['label'], 'Power: On battery')
+        self.assertEqual(r['logged'], ['The unplug timer stopped working: disk on fire'])      # once, not every two seconds
+        self.assertTrue(r['failed'])
+
+    def test_the_longest_text_fits_in_the_card_at_a_narrow_width(self):
+        r = self.scenario('''
+            w.resize(560, 900); wait(0.3)
+            w.unplug_label.setText('Last unplugged at least 99 d 23:59:59 ago'); wait(0.3)
+            card = w.unplug_label.parentWidget()
+            while card is not None and card.objectName() != 'card':
+                card = card.parentWidget()
+            label = w.unplug_label
+            left = label.mapTo(card, label.rect().topLeft()).x()
+            result['fits'] = label.width() >= label.sizeHint().width()
+            result['inside'] = left >= 0 and left + label.width() <= card.width()
+            result['not_wrapped'] = label.height() <= label.fontMetrics().height() * 1.6
+        ''')
+        self.assertEqual(r, {'fits': True, 'inside': True, 'not_wrapped': True})
+
+    def test_a_ticking_label_keeps_an_idle_window_quiet(self):
+        r = self.scenario('''
+            source['now'] = 'battery'; confirm()
+            w.power_source_timer.stop()                      # the app's own checks would only repeat the same reading
+            counts = {'paint': 0, 'layout': 0}
+            class Spy(QObject):
+                def eventFilter(self, obj, event):
+                    kind = event.type()
+                    if kind == QEvent.Type.Paint: counts['paint'] += 1
+                    elif kind == QEvent.Type.LayoutRequest: counts['layout'] += 1
+                    return False
+            w.tabs.setCurrentIndex(0); wait(1.0)
+            spy = Spy(); app.installEventFilter(spy)
+            start = w.unplug_label.text()
+            for _ in range(3):
+                clock['now'] += 1; wait(1.0)                 # the window's own one-second refresh shows the new time
+            result['changed'] = w.unplug_label.text() != start
+            result['per_second'] = (counts['paint'] + counts['layout']) / 3.0
+        ''')
+        self.assertTrue(r['changed'])
+        self.assertLess(r['per_second'], 15, r)
+
+    def test_the_uninstaller_removes_the_saved_time(self):
+        text = (ROOT / 'uninstall.sh').read_text()
+        self.assertIn('unplug-timer.json', text)
+        self.assertIn('"$UNPLUG_STATE"', text[text.index('Removing user files'):])
+        self.assertIn("UNPLUG_FILE = CONFIG_DIR / 'unplug-timer.json'", (SRC / 'optimus_tray.py').read_text())
 
 
 if __name__ == '__main__':

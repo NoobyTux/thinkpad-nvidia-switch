@@ -1,6 +1,6 @@
 # ThinkPad Nvidia Switch
 
-**Version 2.6.9** · **MIT licensed** · **Linux / KDE Plasma (tested target)**
+**Version 2.7.0** · **MIT licensed** · **Linux / KDE Plasma (tested target)**
 
 A tray application for Linux laptops with hybrid graphics. It can put a supported NVIDIA discrete GPU to sleep, limit CPU activity, show battery charge/discharge rates and estimated remaining time, manage Intel CPU/GPU voltage offsets, and save named power profiles. Profiles can be applied by hand or selected automatically when the charger is connected or disconnected.
 
@@ -161,6 +161,7 @@ The dashboard at the top is visible on every tab:
 - **CPU:** active/total physical cores and threads, long-term and boost power limits, the maximum CPU speed, and the live CPU / CPU cache / Intel GPU voltage offsets.
 - **Battery:** charge, status and rate; remaining time while discharging, or power *into the battery* and time to full while charging. Estimates come from `/sys/class/power_supply` (`power_now` and `energy_*` preferred; `current_now` × `voltage_now` and `charge_*` as fallback; the sign of the rate is ignored because drivers differ). They are indicative, never guaranteed; the app shows "unavailable" rather than inventing a number.
 - **Power source** (Plugged in / On battery / Not detected) and the last applied profile.
+- **Time since unplugged** (top right of the battery card): how long ago the charger was last unplugged, counting up every second (for example *Unplugged 1:23:45 ago*; after plugging in again it reads *Last unplugged … ago* and keeps counting). Linux does not record when the power source changed, so the time starts when this app *sees* the change (it checks every two seconds). If the app started while the laptop was already on battery, or was not running for a while, it says *at least*, because the real unplugging may have been earlier. The time is remembered in `unplug-timer.json`, so restarting the app (for example after an upgrade) does not reset it, but a reboot does. A charger change while the laptop is asleep is not seen.
 - **Battery history:** a chart of discharge watts (it records 0 W while the battery is not discharging, and a gap when no reading is available). **Show** (1, 5, 10, 15 or 30 minutes) and **Update every** (2 to 60 seconds) are global settings, not part of any profile.
 
 The window scrolls vertically when it is short, and each tab is exactly as tall as its own content. With enough width the CPU and Profiles cards sit in two columns. Closing the window only hides it; use **Quit** in the tray menu to exit. While the window is hidden only the work that nobody can see is paused: the battery, CPU and voltage read-outs (and the 15-second voltage poll) are not updated, and they are refreshed the moment the window is shown. GPU state tracking, notifications, the tray menu, battery-history sampling and automatic profiles keep running. An idle window uses well under 1 % of one CPU core. Only one copy runs per desktop user: starting it again raises the existing window. `--minimized` (used by autostart) starts hidden in the tray.
@@ -210,7 +211,7 @@ A profile is a named setup (any number; names are unique, case-insensitive, up t
 | NVIDIA power | Leave unchanged, put to sleep (`D3cold`), or wake (`D0`). `D0` cannot be combined with a protection |
 | Basic / Stronger protection | Disabled when not ticked. Enabling a protection also unloads NVIDIA and puts the GPU to sleep, so with *Put to sleep* it is enabled as chosen, and with *Leave unchanged* it is enabled only if the GPU is already asleep. While the GPU is on, a protection that is already on stays on and one that is not on is **not** switched on (the log says so), so the GPU is never switched off behind your back |
 | Auto-sleep | Sets the *Put NVIDIA back to sleep after NVIDIA apps close* option |
-| CPU cores, CPU speed, PL1/PL2 | Each is optional; an unchecked setting is left alone, which suits CPUs without RAPL or hotplug |
+| Physical cores to turn off, CPU speed, PL1/PL2 | Each is optional; an unchecked setting is left alone, which suits CPUs without RAPL or hotplug |
 | Voltage offsets | Optional and off by default; all three are set together |
 
 Applying runs in this order: CPU cores, CPU speed, power limits, voltage offsets, then the GPU (a wake removes both protections first, then loads the driver; otherwise sleep first, then the chosen protections). A profile is **not atomic**: every independent group (cores, speed, power limits, voltage, NVIDIA) is attempted even if an earlier one failed, so a single hiccup cannot leave the rest of a battery profile unapplied. A failed CPU step is retried once after 1.5 seconds. A speed limit that the kernel still refuses is tried twice more *after* the other steps (3 and 5 seconds later), and when a speed limit is refused the technical log records a `SPEED LIMIT DIAGNOSTICS` snapshot (cpufreq driver, governor, per-policy limits, intel_pstate settings and any known power tools that are running). The report names every step that failed and everything that was applied. Inside the NVIDIA group the steps depend on each other, so it stops at its first failure. CPU settings run first so a busy NVIDIA driver cannot block them. Never force-unload a busy driver. To see what holds NVIDIA:
@@ -300,6 +301,7 @@ KWin should hold Intel's devices only; NVIDIA's `cardN` and `renderDN` should be
 | `~/.local/share/thinkpad-nvidia-switch/` | Installed application (and `uninstall.sh`) |
 | `~/.config/thinkpad-nvidia-switch/settings.json` | UI preferences (tab, history, notifications, options) |
 | `~/.config/thinkpad-nvidia-switch/profiles.json` | Named profiles and AC/battery assignments |
+| `~/.config/thinkpad-nvidia-switch/unplug-timer.json` | When the charger was last seen unplugged (for the battery card timer) |
 | `~/.local/state/thinkpad-nvidia-switch/` | `operations.log`, `detailed.log` |
 | `~/.config/autostart/thinkpad-nvidia-switch.desktop` | Created by *Start at login* |
 | `~/.config/systemd/user/plasma-kwin_wayland.service.d/90-thinkpad-nvidia-switch-intel-render.conf` and the symlinks `~/.config/thinkpad-nvidia-switch/kwin-intel-render`, `kwin-intel-card` | The [KWin Intel-only drop-in](#kde-wayland-keeping-the-desktop-on-intel) (KDE Wayland only) |

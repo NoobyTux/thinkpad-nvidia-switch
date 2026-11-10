@@ -29,6 +29,7 @@ PROFILE_SCHEMA_MODULE=/usr/local/libexec/profiles.py
 UNDERVOLT_HELPER=/usr/local/libexec/thinkpad-nvidia-switch-undervolt
 UNDERVOLT_MODULE=/usr/local/libexec/undervolt_control.py
 PROFILES="${HOME}/.config/thinkpad-nvidia-switch/profiles.json"
+UNPLUG_STATE="${HOME}/.config/thinkpad-nvidia-switch/unplug-timer.json"
 CPU_CORES_STATE="$STATE_DIR/cpu-offlined-cores.json"
 CPU_LIMITS_STATE="$STATE_DIR/cpu-original-limits.json"
 CPU_FREQUENCY_STATE="$STATE_DIR/cpu-original-frequency.json"
@@ -253,7 +254,7 @@ fi
 systemctl --user daemon-reload || true
 
 printf 'Removing user files...\n'
-rm -f "$AUTOSTART" "$DESKTOP" "$STEAM_DESKTOP" "$ICON" "$PREFS" "$LEGACY_PREFS" "$PROFILES" "$KWIN_FIX_SCRIPT"
+rm -f "$AUTOSTART" "$DESKTOP" "$STEAM_DESKTOP" "$ICON" "$PREFS" "$LEGACY_PREFS" "$PROFILES" "$UNPLUG_STATE" "$KWIN_FIX_SCRIPT"
 rmdir "${HOME}/.config/thinkpad-nvidia-switch" 2>/dev/null || true
 rm -rf "$LOG_DIR" "$DEST"
 
