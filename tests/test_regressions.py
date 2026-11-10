@@ -202,6 +202,8 @@ class WindowBehaviourTests(unittest.TestCase):
     def test_profile_editor_core_option_says_which_cores_it_turns_off(self):
         # Text only: the option has always been the number of physical cores to turn OFF.
         result, stderr = run_child('''
+            # the number box is limited by the machine's physical cores (a 2-core CI runner allows only 1): use a fixed CPU
+            t.core_control_status = lambda: {'available': True, 'maximum': 3, 'disabled': 0, 'can_restore': False, 'reason': ''}
             settings = {'gpu_state': 'keep', 'basic_guard': False, 'aggressive_guard': False,
                         'auto_gpu_sleep': False, 'disabled_cores': None, 'frequency_mhz': None,
                         'pl1_w': None, 'pl2_w': None, 'undervolt_cpu_mv': None,
@@ -1896,6 +1898,7 @@ class UnplugTimerWindowTests(unittest.TestCase):
     def test_the_time_is_saved_privately_and_survives_a_restart_of_the_window(self):
         r = self.scenario('''
             import optimus_tray
+            w.unplug_timer.boot_id = 'boot-for-the-test'     # the real one is read from the kernel
             source['now'] = 'ac'; confirm()
             clock['now'] += 5; source['now'] = 'battery'; confirm()
             saved = json.loads(optimus_tray.UNPLUG_FILE.read_text())
