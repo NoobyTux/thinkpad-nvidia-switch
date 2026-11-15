@@ -1,6 +1,6 @@
 # ThinkPad Nvidia Switch
 
-**Version 2.9.1** · **MIT licensed** · **Linux / KDE Plasma (tested target)**
+**Version 2.10.0** · **MIT licensed** · **Linux / KDE Plasma (tested target)**
 
 A tray application for Linux laptops with hybrid graphics. It can put a supported NVIDIA discrete GPU to sleep, limit CPU activity, show battery charge/discharge rates and estimated remaining time, manage Intel CPU/GPU voltage offsets, and save named power profiles. Profiles can be applied by hand or selected automatically when the charger is connected or disconnected.
 
@@ -239,7 +239,7 @@ Profile storage: `~/.config/thinkpad-nvidia-switch/profiles.json` (owner-only, w
 - **Put NVIDIA back to sleep after NVIDIA apps close:** after the GPU wakes (`D3cold` → `D0`) the app tracks the application session that uses NVIDIA (its systemd app scope, or the process tree) and, once that session has ended and no process holds an NVIDIA device for 2 seconds, returns the GPU to sleep. It is inactive while a protection is on, waits 20 seconds after you turn the GPU on yourself, and stops waiting if no user appears within 15 seconds. Results depend on the driver and hardware.
 - **Close Xwayland automatically if it keeps NVIDIA from switching off** (on by default): see *If no program is named* in the troubleshooting notes. When a leftover graphics buffer kept by Xwayland stops NVIDIA from switching off, the app closes Xwayland, waits and tries again, and a tray message says what happened. Every X11 program closes and unsaved work in them is lost. Switched off, the app asks before closing anything.
 
-**Notifications** (each switch is saved): *NVIDIA GPU wakes up or goes to sleep* (on by default), *Charger connected or disconnected*, *Automatic power profile applied*, *Saved CPU/GPU settings restored at startup* (off by default). There is no charger notification for the first reading after login.
+**Notifications** (each switch is saved): *NVIDIA GPU wakes up or goes to sleep* (on by default), *Charger connected or disconnected*, *Automatic power profile applied*, *Saved CPU/GPU settings restored at startup* (off by default), *Xwayland closed automatically to release NVIDIA* (on by default: the tray message that says Xwayland was closed and which X11 programs were running; if you switch it off, Xwayland is still closed when needed and the activity log still records it). There is no charger notification for the first reading after login.
 
 **View activity log** opens a modeless window with *Recent activity* and *Technical details*. The logs are `~/.local/state/thinkpad-nvidia-switch/operations.log` (about 5,000 lines) and `detailed.log` (about 20,000 lines), owner-only. The technical log can contain file names, process names, PIDs and command output: **redact it before sharing.**
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.10.0 — The Xwayland notification can be switched off (2026-11-15)
+
+### Added
+
+- **Notifications → Xwayland closed automatically to release NVIDIA.** The tray message that appears when the app closes Xwayland by itself (*NVIDIA could not be switched off because Xwayland kept a graphics buffer from it. Xwayland was closed to release it. X11 programs that were running: …*) is now a switch in the Notifications menu, like the others, and is remembered in `settings.json`. It is on by default, because the message tells you that X11 programs were closed; an older settings file gets it switched on. Switching it off only hides the balloon: Xwayland is still closed when needed (that has its own switch in the Options menu) and the activity log still records every close, with the PIDs and the X11 programs that were running.
+
+### Project
+
+- Tests for the new setting and its validation, for the menu entry and its saving, for an older settings file, for the switched-off case (still closed and logged, no balloon) and for the display time of the message; 369 → 374 automated tests.
+
 ## 2.9.1 — The unplug timer keeps its time through a reboot or power-off (2026-11-15)
 
 ### Fixed

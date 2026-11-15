@@ -2543,6 +2543,66 @@ class XwaylandPreferenceTests(unittest.TestCase):
         self.assertFalse(result['value'])
 
 
+@unittest.skipUnless(QT, 'PySide6 (and its system libraries) is not available')
+class XwaylandNotificationSwitchTests(unittest.TestCase):
+    """The tray message about the automatic Xwayland close is one of the switches of the Notifications menu."""
+
+    def test_it_is_in_the_menu_checked_by_default_and_remembered(self):
+        result, stderr = run_child('''
+            import json
+            import optimus_tray
+            w = t.MainWindow()
+            labels = [a.text() for m in w.menuBar().findChildren(optimus_tray.QMenu) if m.title() == 'Notifications' for a in m.actions()]
+            result['in_notifications_menu'] = 'Xwayland closed automatically to release NVIDIA' in labels
+            result['checked'] = w.notification_actions['xwayland'].isChecked()
+            w.notification_actions['xwayland'].setChecked(False)
+            result['saved_off'] = json.loads(optimus_tray.PREFS_FILE.read_text())['notifications']['xwayland']
+            result['reloaded_off'] = optimus_tray.load_preferences()['notifications']['xwayland']
+            w.notification_actions['xwayland'].setChecked(True)
+            result['saved_on'] = json.loads(optimus_tray.PREFS_FILE.read_text())['notifications']['xwayland']
+        ''')
+        self.assertNotIn('Traceback', stderr)
+        self.assertEqual(result, {'in_notifications_menu': True, 'checked': True, 'saved_off': False,
+                                  'reloaded_off': False, 'saved_on': True})
+
+    def test_an_older_settings_file_gets_the_message_switched_on(self):
+        result, _ = run_child('''
+            import optimus_tray
+            result['xwayland'] = optimus_tray.load_preferences()['notifications']['xwayland']
+            result['others'] = {k: v for k, v in optimus_tray.load_preferences()['notifications'].items() if k != 'xwayland'}
+        ''', settings={'notifications': {'gpu_state': False, 'charger': True}})
+        self.assertTrue(result['xwayland'])
+        self.assertEqual(result['others'], {'gpu_state': False, 'charger': True, 'auto_profile': False, 'startup_restore': False})
+
+    def test_switched_off_xwayland_is_still_closed_and_logged_but_no_balloon_is_shown(self):
+        r = run_child(textwrap.dedent(XwaylandWindowTests.SETUP) + textwrap.dedent('''
+            w.notification_actions['xwayland'].setChecked(False)
+            helper(RETRY)
+            w.toggle_gpu()
+            result['finished'] = until(lambda: counter.read_text().count('x') >= 2 and not w.power_btn.isBusy(), 10.0)
+            result['closed'] = len(terminated)
+            result['state'] = marker.read_text().strip()
+            result['xwayland_balloons'] = [m for m in tray_messages if 'Xwayland' in m]
+            result['log'] = t.LOG_FILE.read_text()
+        '''))[0]
+        self.assertTrue(r['finished'])
+        self.assertEqual((r['closed'], r['state']), (1, 'D3cold'))              # it still did its job
+        self.assertEqual(r['xwayland_balloons'], [])                               # ... without the balloon
+        self.assertIn('Closed Xwayland (PID 4321) automatically', r['log'])      # and the activity log still says what happened
+        self.assertIn('X11 programs that were running: Discord, Steam.', r['log'])
+
+    def test_switched_on_the_balloon_stays_open_for_nine_seconds(self):
+        r = run_child(textwrap.dedent(XwaylandWindowTests.SETUP) + textwrap.dedent('''
+            durations = []
+            w.tray.showMessage = lambda *a: durations.append((a[1], a[3]))
+            helper(RETRY)
+            w.toggle_gpu()
+            until(lambda: counter.read_text().count('x') >= 2, 8.0)
+            result['durations'] = [ms for text, ms in durations if 'Xwayland' in text]
+        '''))[0]
+        self.assertEqual(r['durations'], [9000])                                   # the message is long: more time to read it
+
+
 CHILD_BOX = '''
     import json, os, sys, tempfile
     from pathlib import Path

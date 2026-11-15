@@ -29,6 +29,14 @@ class NotificationPolicyTests(unittest.TestCase):
         self.assertFalse(settings['startup_restore'])
         self.assertNotIn('unexpected', settings)
 
+    def test_the_xwayland_notification_is_on_by_default_and_validated(self):
+        # It reports that X11 programs were closed, so a user who never opened the menu is told.
+        self.assertTrue(notification_settings(None)['xwayland'])
+        self.assertTrue(notification_settings({'gpu_state': False})['xwayland'])          # an older settings file
+        self.assertFalse(notification_settings({'xwayland': False})['xwayland'])
+        self.assertTrue(notification_settings({'xwayland': 'no'})['xwayland'])            # not a boolean: the default
+        self.assertTrue(notification_settings({'xwayland': 0})['xwayland'])
+
     def test_gpu_sleep_and_unknown_waker(self):
         self.assertIn('D3cold', gpu_transition_message('D0', 'D3cold'))
         self.assertIn('not identified', gpu_transition_message('D3cold', 'D0'))

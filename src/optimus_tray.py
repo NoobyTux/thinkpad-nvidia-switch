@@ -59,7 +59,7 @@ DRIVER_OVERRIDE_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-driver-overrid
 PCI_MASK_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-config-mask.json')
 DETACHED_MARKER = Path('/var/lib/thinkpad-nvidia-switch/pci-detached.json')
 APP_NAME = 'ThinkPad Nvidia Switch'
-APP_VERSION = '2.9.1'
+APP_VERSION = '2.10.0'
 APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'thinkpad-nvidia-switch.svg'
 ASSET_DIR = Path(__file__).resolve().parent.parent / 'assets'
 CHECKBOX_CHECKMARK = (ASSET_DIR / 'checkbox-checkmark.png').as_posix()
@@ -2083,6 +2083,7 @@ class MainWindow(QMainWindow):
             ('charger', 'Charger connected or disconnected'),
             ('auto_profile', 'Automatic power profile applied'),
             ('startup_restore', 'Saved CPU/GPU settings restored at startup'),
+            ('xwayland', 'Xwayland closed automatically to release NVIDIA'),
         )
         self.notification_actions = {}
         for kind, label in choices:
@@ -2147,9 +2148,9 @@ class MainWindow(QMainWindow):
             self.notification_actions[kind].blockSignals(False)
             log_operation(f'Cannot save notification preference {kind}: {exc}')
 
-    def notify(self, kind, text):
+    def notify(self, kind, text, milliseconds=4500):
         if text and self.preferences['notifications'].get(kind, False):
-            self.tray.showMessage(APP_NAME, text, QSystemTrayIcon.MessageIcon.Information, 4500)
+            self.tray.showMessage(APP_NAME, text, QSystemTrayIcon.MessageIcon.Information, milliseconds)
 
     def _gpu_wake_owners(self):
         # An NVIDIA file descriptor is evidence of current use, not proof of
@@ -3460,8 +3461,8 @@ class MainWindow(QMainWindow):
             programs = ' No X11 programs were running.'
         log_operation(f'Closed Xwayland (PID {", ".join(map(str, pids))}) automatically: it kept a graphics buffer from NVIDIA, '
                       f'which stopped {what}.{programs}')
-        self.tray.showMessage(APP_NAME, 'NVIDIA could not be switched off because Xwayland kept a graphics buffer from it. '
-                              'Xwayland was closed to release it.' + programs, QSystemTrayIcon.MessageIcon.Information, 9000)
+        self.notify('xwayland', 'NVIDIA could not be switched off because Xwayland kept a graphics buffer from it. '
+                    'Xwayland was closed to release it.' + programs, 9000)
         self.xwayland_wait = {'pids': pids, 'deadline': time.monotonic() + 10.0, 'gone': None, 'retry': retry}
         self.gpu_action = 'gpu-off'
         self._set_gpu_busy(True)

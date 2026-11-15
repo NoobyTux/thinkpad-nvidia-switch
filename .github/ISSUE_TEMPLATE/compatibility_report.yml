@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: App version
-      placeholder: "2.9.1"
+      placeholder: "2.10.0"
     validations:
       required: true
   - type: input

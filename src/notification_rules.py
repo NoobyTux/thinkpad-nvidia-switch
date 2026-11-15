@@ -12,6 +12,7 @@ NOTIFICATION_DEFAULTS = {
     'charger': False,
     'auto_profile': False,
     'startup_restore': False,
+    'xwayland': True,            # Xwayland was closed to release NVIDIA (it closes X11 programs, so it is on by default)
 }
 
 
