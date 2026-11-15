@@ -107,8 +107,53 @@ class KernelAndSessionTests(FakeProc):
         source = (ROOT / 'src' / 'xwayland_release.py').read_text()
         self.assertIn("!= 'Xwayland'", source)
         self.assertNotIn('SIGKILL', source)
-        self.assertNotIn('subprocess', source)
         self.assertNotIn('sudo', source)
+        self.assertNotIn('shell=True', source)
+        self.assertEqual(source.count("['ss', '-xpnH']"), 1)                  # the only program it runs: ss, to list X11 programs
+
+
+SS_SAMPLE = """\
+u_str ESTAB 0 0 /tmp/.X11-unix/X0 40123 * 38999 users:(("Xwayland",pid=1285,fd=21))
+u_str ESTAB 0 0 * 38999 * 40123 users:(("steam",pid=5000,fd=12))
+u_str ESTAB 0 0 @/tmp/.X11-unix/X0 40001 * 39000 users:(("Xwayland",pid=1285,fd=9))
+u_str ESTAB 0 0 * 39000 * 40001 users:(("Discord",pid=6000,fd=7),("Discord",pid=6001,fd=7))
+u_str ESTAB 0 0 /run/user/1000/bus 777 * 778 users:(("dbus-daemon",pid=900,fd=3))
+u_str ESTAB 0 0 * 778 * 777 users:(("firefox",pid=4257,fd=4))
+u_str ESTAB 0 0 * 5555 * 6666
+not a socket line at all
+"""
+
+
+class X11ProgramListTests(unittest.TestCase):
+    def test_the_programs_connected_to_xwayland_are_named(self):
+        self.assertEqual(xr.parse_x11_clients(SS_SAMPLE, {1285}), ['Discord', 'steam'])    # not Firefox, not the D-Bus daemon
+
+    def test_nothing_connected_or_another_xwayland(self):
+        self.assertEqual(xr.parse_x11_clients(SS_SAMPLE, {9999}), [])
+        self.assertEqual(xr.parse_x11_clients('', {1285}), [])
+        self.assertEqual(xr.parse_x11_clients('garbage\n\n', {1285}), [])
+
+    def test_the_command_is_run_without_privileges_and_failures_mean_unknown(self):
+        import subprocess
+        from types import SimpleNamespace
+        seen = []
+
+        def run(command, **kwargs):
+            seen.append((command, kwargs.get('timeout')))
+            return SimpleNamespace(returncode=0, stdout=SS_SAMPLE)
+
+        self.assertEqual(xr.x11_client_names([1285], run=run), ['Discord', 'steam'])
+        self.assertEqual(seen, [(['ss', '-xpnH'], 3)])
+        self.assertIsNone(xr.x11_client_names([1285], run=lambda *a, **k: SimpleNamespace(returncode=1, stdout='')))
+
+        def missing(*a, **k):
+            raise FileNotFoundError
+
+        def slow(*a, **k):
+            raise subprocess.TimeoutExpired('ss', 3)
+
+        self.assertIsNone(xr.x11_client_names([1285], run=missing))
+        self.assertIsNone(xr.x11_client_names([1285], run=slow))
 
 
 if __name__ == '__main__':

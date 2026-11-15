@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.9.0 — Xwayland is closed automatically when it keeps NVIDIA from switching off (2026-11-15)
+
+### Changed
+
+- **No button: the app does it.** In 2.8.0 the failure dialog offered *Close X11 programs and try again*. Now, whenever NVIDIA has to be switched off and the only obstacle is a graphics buffer that Xwayland keeps (the *NVIDIA graphics buffers still alive* case), the app closes Xwayland by itself, waits until it is gone and `nvidia_drm`'s reference count has dropped (at most about ten seconds, then it tries anyway) and repeats the failed step. This covers turning NVIDIA off from the window or the tray, switching *Basic* or *Stronger protection* on, applying a profile (automatic or manual: the profile is applied again at once instead of after the slow ten-second retry) and the automatic sleep after NVIDIA programs close. It works with the window hidden in the tray.
+- A tray message says what happened: *Xwayland was closed to release it*, plus the X11 programs that were running when `ss` could list them (they close with Xwayland and unsaved work in them is lost). The activity log has the same, with the PIDs.
+- **Safeguards.** Only a Wayland session in which the app itself runs as a Wayland program (an app on X11 would close itself) and a program-free failure (nobody named as holding NVIDIA); only your own user's Xwayland processes, with SIGTERM; and after one automatic close the app does not do it again for two minutes, so a buffer that something else holds can never cause a loop (the normal explanation appears instead).
+- **Options → Close Xwayland automatically if it keeps NVIDIA from switching off** (on by default, remembered in `settings.json`). Switched off, the 2.8.0 dialog with its confirmation button returns (Cancel is the default).
+
+### Project
+
+- Tests for each path (window, hidden window, protections, automatic and manual profiles, the automatic sleep), for the cooldown, for Xwayland refusing to close, for a reference that stays, for the preference and for the `ss` output parser; 343 → 359 automated tests.
+
 ## 2.8.0 — Close Xwayland from the app to release leftover NVIDIA graphics buffers (2026-11-15)
 
 ### Added

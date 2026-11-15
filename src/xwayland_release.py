@@ -9,7 +9,9 @@ Xwayland again when an X11 program is launched. Only Xwayland processes of the c
 from __future__ import annotations
 
 import os
+import re
 import signal
+import subprocess
 from pathlib import Path
 
 PROC = Path('/proc')
@@ -70,3 +72,41 @@ def terminate_xwayland(proc=PROC, uid=None, kill=os.kill):
             continue
         asked.append(pid)
     return asked
+
+
+_SS_LINE = re.compile(r'^\S+\s+\S+\s+\d+\s+\d+\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)\s*(.*)$')
+_SS_USER = re.compile(r'\("([^"]*)",pid=(\d+)')
+
+
+def parse_x11_clients(ss_output, xwayland):
+    """Names of the programs connected to Xwayland, from ``ss -xpn`` output; *xwayland* is the set of its PIDs.
+
+    Xwayland's sockets show the inode of the program at the other end; the lines of those inodes name the programs.
+    """
+    peers, owners = set(), {}
+    for line in ss_output.splitlines():
+        match = _SS_LINE.match(line.strip())
+        if not match:
+            continue
+        local, inode, _peer, peer_inode, users = match.groups()
+        pairs = [(name, int(pid)) for name, pid in _SS_USER.findall(users)]
+        if '.X11-unix' in local and any(pid in xwayland for _name, pid in pairs):
+            peers.add(peer_inode)
+        owners[inode] = pairs
+    names = set()
+    for inode in peers:
+        for name, pid in owners.get(inode, []):
+            if pid not in xwayland and name:
+                names.add(name)
+    return sorted(names, key=str.casefold)
+
+
+def x11_client_names(pids, run=subprocess.run):
+    """The X11 programs that are running (they close with Xwayland), or None when that cannot be found out."""
+    try:
+        done = run(['ss', '-xpnH'], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return parse_x11_clients(done.stdout or '', set(pids))

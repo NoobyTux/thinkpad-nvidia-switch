@@ -14,7 +14,8 @@ from battery_telemetry import battery_snapshot, battery_label_text
 from voltage_status import parse_voltage_report, format_voltage_status
 from undervolt_control import MIN_OFFSET_MV, WARN_BELOW_MV, validate_mv
 from notification_rules import notification_settings, gpu_transition_message, power_source_message, gpu_failure_message, xwayland_offer_text
-from xwayland_release import xwayland_pids, process_alive, nvidia_drm_references, restart_possible, terminate_xwayland
+from xwayland_release import (xwayland_pids, process_alive, nvidia_drm_references, restart_possible, terminate_xwayland,
+                              x11_client_names)
 from layout_rules import responsive_columns, selected_tab_height
 from unplug_timer import UnplugTimer
 from profiles import shared_buffer_count
@@ -58,7 +59,7 @@ DRIVER_OVERRIDE_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-driver-overrid
 PCI_MASK_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-config-mask.json')
 DETACHED_MARKER = Path('/var/lib/thinkpad-nvidia-switch/pci-detached.json')
 APP_NAME = 'ThinkPad Nvidia Switch'
-APP_VERSION = '2.8.0'
+APP_VERSION = '2.9.0'
 APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'thinkpad-nvidia-switch.svg'
 ASSET_DIR = Path(__file__).resolve().parent.parent / 'assets'
 CHECKBOX_CHECKMARK = (ASSET_DIR / 'checkbox-checkmark.png').as_posix()
@@ -87,6 +88,9 @@ CONTENT_MARGIN = 14
 TRAY_WAIT_SECONDS = 20.0
 # A failed *automatic* profile is retried once after this delay (settling hotplug, other power tools).
 AUTO_PROFILE_RETRY_MS = 10000
+# After the app closed Xwayland by itself it does not do so again for this long: if that did not help, the buffer is
+# held by something else and closing Xwayland again (the desktop may restart it) would only loop.
+XWAYLAND_COOLDOWN_S = 120.0
 
 # One instance per desktop user. QLockFile provides the hard mutual-exclusion
 # guarantee; QLocalServer lets a later launcher ask the existing instance to
@@ -525,6 +529,7 @@ def load_preferences():
         'autostart': bool(data.get('autostart', False)),
         'restore_state': bool(data.get('restore_state', False)),
         'auto_restore_apps': bool(data.get('auto_restore_apps', False)),
+        'auto_close_xwayland': data.get('auto_close_xwayland') if type(data.get('auto_close_xwayland')) is bool else True,
         'history_window': window if window in HistoryGraph.PERIODS else 'Last 5 minutes',
         'history_interval': interval if interval in HistoryGraph.SAMPLE_INTERVALS else '10 seconds',
         'selected_tab': data.get('selected_tab', 0) if data.get('selected_tab', 0) in (0, 1, 2) else 0,
@@ -1976,6 +1981,7 @@ class MainWindow(QMainWindow):
         self.power_confirmed = False
         self.unplug_timer = UnplugTimer(UNPLUG_FILE)
         self.unplug_timer_failed = False
+        self.profile_running_profile = None
         self.profile_process = None
         self.profile_running_name = None
         # A manual GPU switch runs in the background so the window keeps animating.
@@ -1992,6 +1998,7 @@ class MainWindow(QMainWindow):
         self.gpu_settle_timer.setInterval(200)
         self.gpu_settle_timer.timeout.connect(self._gpu_settle_tick)
         self.xwayland_wait = None                    # set while Xwayland is being closed to release NVIDIA graphics buffers
+        self.xwayland_last_closed = None             # time.monotonic() of the last automatic close
         self.xwayland_timer = QTimer(self)
         self.xwayland_timer.setInterval(300)
         self.xwayland_timer.timeout.connect(self._xwayland_tick)
@@ -2059,6 +2066,14 @@ class MainWindow(QMainWindow):
         self.auto_restore_action.toggled.connect(self.set_auto_restore_apps)
         options_menu.addAction(self.auto_restore_action)
         self.auto_restore_action.setToolTip('When NVIDIA use wakes the GPU, track the owning application session and restore D3cold only after that application and its helpers have closed.')
+        self.auto_xwayland_action = QAction('Close Xwayland automatically if it keeps NVIDIA from switching off', self)
+        self.auto_xwayland_action.setCheckable(True)
+        self.auto_xwayland_action.setChecked(self.preferences['auto_close_xwayland'])
+        self.auto_xwayland_action.toggled.connect(self.set_auto_close_xwayland)
+        options_menu.addAction(self.auto_xwayland_action)
+        self.auto_xwayland_action.setToolTip('After a game, Xwayland (the layer that runs X11 programs) can keep a graphics buffer that stops NVIDIA from '
+                                             'switching off. When this is on, the app closes Xwayland by itself and tries again; every X11 program closes '
+                                             '(unsaved work in them is lost). When it is off, you are asked first.')
         # Notification preferences apply immediately and survive application
         # restarts. Existing installations keep their GPU state alerts by default.
         notifications_menu = self.menuBar().addMenu('Notifications')
@@ -2226,6 +2241,11 @@ class MainWindow(QMainWindow):
             self.preferences['restore_state'] = False
             save_preferences(self.preferences)
             log_operation('Remember and restore GPU + CPU settings: disabled.')
+
+    def set_auto_close_xwayland(self, enabled):
+        self.preferences['auto_close_xwayland'] = bool(enabled)
+        save_preferences(self.preferences)
+        log_operation('Closing Xwayland automatically when it keeps NVIDIA from switching off was ' + ('enabled.' if enabled else 'disabled.'))
 
     def set_auto_restore_apps(self, enabled):
         self.preferences['auto_restore_apps'] = bool(enabled)
@@ -2403,6 +2423,8 @@ class MainWindow(QMainWindow):
         else:
             msg = (normal_err or p.stdout or 'The NVIDIA GPU could not be restored to D3cold.').strip()
             log_operation(f'Automatic D3cold restoration failed: {msg}')
+            if self._may_release_buffers_automatically(msg):
+                self._release_buffers_then(self._auto_restore_gpu_off, 'putting NVIDIA back to sleep')
         self.refresh()
 
     def restore_saved_state(self):
@@ -2703,6 +2725,7 @@ class MainWindow(QMainWindow):
         payload = base64.urlsafe_b64encode(json.dumps(settings, separators=(',', ':')).encode('utf-8')).decode('ascii')
         self.profile_process = QProcess(self)
         self.profile_running_name = profile['name']
+        self.profile_running_profile = profile
         self.profile_run_settings = settings
         self.profile_running_auto = automatic
         self.profile_status_label.setText('Applying profile: ' + profile['name'])
@@ -2800,7 +2823,13 @@ class MainWindow(QMainWindow):
             self.profile_status_label.setText('Could not finish: ' + profile_name)
             self.profile_status_label.setToolTip(details[:600])
             log_operation(f'Could not fully apply profile {profile_name}: {details}. Some changes may already have been made.')
-            if not self.profile_running_auto:
+            profile = self.profile_running_profile
+            automatic = self.profile_running_auto
+            if profile is not None and self._may_release_buffers_automatically(details):
+                # The GPU step failed only because Xwayland kept a graphics buffer: close it and apply the profile again.
+                self._release_buffers_then(lambda p=profile, a=automatic: self._start_profile_apply(p, a),
+                                           f'applying the profile {profile_name}')
+            elif not automatic:
                 QMessageBox.warning(self, 'Profile could not finish',
                     friendly_profile_failure(details) + '\n\nTechnical details are in View activity log.')
             else:
@@ -3375,20 +3404,68 @@ class MainWindow(QMainWindow):
         self._set_gpu_busy(False)
 
     def _show_gpu_failure(self, action, details):
-        """Tell the user why a GPU switch failed, in plain words (a dialog, or a tray balloon when the window is hidden)."""
+        """Tell the user why a GPU switch failed, in plain words (a dialog, or a tray balloon when the window is hidden).
+
+        A leftover NVIDIA graphics buffer kept by Xwayland is not reported: the app closes Xwayland and tries again.
+        """
         in_use = sorted({name for name, active in self.current_nvidia_usage() if active}, key=str.casefold)
         title, text = gpu_failure_message(action, details, in_use)
+        leftover = action != 'gpu-on' and not in_use and shared_buffer_count(details) > 0
+        if leftover and self._may_release_buffers_automatically(details):
+            retry = self._retry_for(action)
+            if retry is not None:
+                self._release_buffers_then(retry, 'turning NVIDIA off')
+                return
         if self.isVisible():
-            if (action == 'gpu-off' and not in_use and shared_buffer_count(details)
+            if (leftover and action == 'gpu-off' and not self.preferences.get('auto_close_xwayland', True)
                     and restart_possible(QApplication.platformName(), os.environ.get('XDG_SESSION_TYPE', ''), xwayland_pids())):
-                # A graphics buffer that NVIDIA shared with the desktop is still alive. On the laptop where this was
-                # found, closing Xwayland released it, so offer that instead of only advising a log out.
+                # The automatic close is switched off: ask first.
                 if self._ask_close_xwayland(title, f'{text}\n\n{xwayland_offer_text()}\n\nTechnical details are in View activity log.'):
                     self._close_xwayland_and_retry()
             else:
                 QMessageBox.warning(self, title, text + '\n\nTechnical details are in View activity log.')
         else:
             self.notify_problem(f'{title}. {text.split(chr(10) * 2)[0]}')
+
+    def _retry_for(self, action):
+        """What repeats the failed action once the graphics buffer is gone, or None."""
+        return {'gpu-off': self.toggle_gpu,
+                'basic-block-on': lambda: self._set_basic_block(True),
+                'aggressive-block-on': lambda: self._set_aggressive_block(True)}.get(action)
+
+    def _may_release_buffers_automatically(self, details):
+        """True when *details* describe the leftover-buffer failure and the app may close Xwayland by itself now."""
+        if (not self.preferences.get('auto_close_xwayland', True) or shared_buffer_count(details) <= 0
+                or self.xwayland_wait is not None):
+            return False
+        if self.xwayland_last_closed is not None and time.monotonic() - self.xwayland_last_closed < XWAYLAND_COOLDOWN_S:
+            return False
+        return restart_possible(QApplication.platformName(), os.environ.get('XDG_SESSION_TYPE', ''), xwayland_pids())
+
+    def _release_buffers_then(self, retry, what):
+        """Close Xwayland, wait until it is gone and NVIDIA's reference count has dropped, then call *retry*."""
+        names = x11_client_names(xwayland_pids())             # ask before closing: afterwards nobody is left to ask about
+        pids = terminate_xwayland()
+        if not pids:
+            log_operation(f'There is no Xwayland process to close; {what} again.')
+            QTimer.singleShot(0, retry)
+            return
+        self.xwayland_last_closed = time.monotonic()
+        if names is None:
+            programs = ''
+        elif names:
+            programs = ' X11 programs that were running: ' + ', '.join(names) + '.'
+        else:
+            programs = ' No X11 programs were running.'
+        log_operation(f'Closed Xwayland (PID {", ".join(map(str, pids))}) automatically: it kept a graphics buffer from NVIDIA, '
+                      f'which stopped {what}.{programs}')
+        self.tray.showMessage(APP_NAME, 'NVIDIA could not be switched off because Xwayland kept a graphics buffer from it. '
+                              'Xwayland was closed to release it.' + programs, QSystemTrayIcon.MessageIcon.Information, 9000)
+        self.xwayland_wait = {'pids': pids, 'deadline': time.monotonic() + 10.0, 'gone': None, 'retry': retry}
+        self.gpu_action = 'gpu-off'
+        self._set_gpu_busy(True)
+        self.power_btn.setText('Closing X11 programs…')
+        self.xwayland_timer.start()
 
     def _ask_close_xwayland(self, title, text):
         """True when the user chose to close Xwayland. Cancel is the default."""
@@ -3401,20 +3478,11 @@ class MainWindow(QMainWindow):
         return box.clickedButton() is close
 
     def _close_xwayland_and_retry(self):
-        pids = terminate_xwayland()
-        if not pids:
-            log_operation('There is no Xwayland process to close; turning NVIDIA off again.')
-            QTimer.singleShot(0, self.toggle_gpu)
-            return
-        log_operation(f'Closed Xwayland (PID {", ".join(map(str, pids))}) at your request to release the graphics buffers it kept from NVIDIA.')
-        self.xwayland_wait = {'pids': pids, 'deadline': time.monotonic() + 10.0, 'gone': None}
-        self.gpu_action = 'gpu-off'
-        self._set_gpu_busy(True)
-        self.power_btn.setText('Closing X11 programs…')
-        self.xwayland_timer.start()
+        """The user clicked the button: close Xwayland and turn NVIDIA off again."""
+        self._release_buffers_then(self.toggle_gpu, 'turning NVIDIA off')
 
     def _xwayland_tick(self):
-        """Wait until Xwayland has exited and NVIDIA's reference count has dropped, then turn NVIDIA off again."""
+        """Wait until Xwayland has exited and NVIDIA's reference count has dropped, then run the retry."""
         wait = self.xwayland_wait
         if wait is None:
             self.xwayland_timer.stop()
@@ -3428,8 +3496,11 @@ class MainWindow(QMainWindow):
         if alive:
             log_operation('Xwayland did not close within 10 seconds; NVIDIA was not switched off.')
             self._set_gpu_busy(False)
-            QMessageBox.warning(self, 'NVIDIA graphics buffers', 'Xwayland did not close. NVIDIA was not switched off. '
-                                'Log out and back in to release the graphics buffer.')
+            message = 'Xwayland did not close. NVIDIA was not switched off. Log out and back in to release the graphics buffer.'
+            if self.isVisible():
+                QMessageBox.warning(self, 'NVIDIA graphics buffers', message)
+            else:
+                self.notify_problem(message)
             return
         if wait['gone'] is None:
             wait['gone'] = now
@@ -3437,9 +3508,9 @@ class MainWindow(QMainWindow):
             self.xwayland_wait = wait                # closed; give the kernel a moment to drop its reference
             self.xwayland_timer.start()
             return
-        log_operation(f'Xwayland has closed; NVIDIA display driver references: {nvidia_drm_references()}. Turning NVIDIA off again.')
+        log_operation(f'Xwayland has closed; NVIDIA display driver references: {nvidia_drm_references()}. Trying again.')
         self._set_gpu_busy(False)
-        self.toggle_gpu()
+        wait['retry']()
 
     def toggle_basic_block(self, checked): self._set_basic_block(bool(checked))
     def toggle_basic_block_from_tray(self, checked): self._set_basic_block(bool(checked))
