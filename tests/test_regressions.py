@@ -2020,21 +2020,35 @@ class UnplugTimerWindowTests(unittest.TestCase):
         # the window started on battery, so the app did not see the unplugging itself: "at least"
         self.assertEqual(r, {'hidden': 'Unplugged at least 0:00:00 ago', 'shown': 'Unplugged at least 0:10:00 ago'})
 
-    def test_the_time_is_saved_privately_and_survives_a_restart_of_the_window(self):
+    def test_the_time_is_saved_privately_and_survives_a_reboot(self):
         r = self.scenario('''
             import optimus_tray
-            w.unplug_timer.boot_id = 'boot-for-the-test'     # the real one is read from the kernel
+            battery = {'level': 80}
+            t.battery_snapshot = lambda: {'capacity': battery['level'], 'status': 'Discharging', 'discharge_w': 9.0,
+                                          'charge_w': None, 'remaining': None, 'to_full': None}
             source['now'] = 'ac'; confirm()
             clock['now'] += 5; source['now'] = 'battery'; confirm()
+            clock['now'] += 1200; battery['level'] = 70
+            w.unplug_timer.update('battery')                    # the once-a-minute rewrite: time seen, battery level
             saved = json.loads(optimus_tray.UNPLUG_FILE.read_text())
-            result['saved'] = [saved['source'], saved['exact'], saved['unplugged_at'] == clock['now']]
+            result['saved'] = [saved['source'], saved['exact'], saved['capacity']]
             result['mode'] = oct(optimus_tray.UNPLUG_FILE.stat().st_mode & 0o777)
+            # the laptop is rebooted: a new window, with the clock 90 seconds later and the battery a little lower
             from unplug_timer import UnplugTimer
-            again = UnplugTimer(optimus_tray.UNPLUG_FILE, boot_id=w.unplug_timer.boot_id, clock=lambda: clock['now'] + 30)
+            battery['level'] = 69
+            again = UnplugTimer(optimus_tray.UNPLUG_FILE, clock=lambda: clock['now'] + 90,
+                                capacity=lambda: t.battery_snapshot()['capacity'])
             again.update('battery')
-            result['restarted'] = again.describe('battery')
+            result['after_reboot'] = again.describe('battery')
+            # ... and a laptop that was charged while it was off starts again
+            battery['level'] = 100
+            charged = UnplugTimer(optimus_tray.UNPLUG_FILE, clock=lambda: clock['now'] + 7200,
+                                  capacity=lambda: t.battery_snapshot()['capacity'])
+            charged.update('battery')
+            result['after_charging'] = charged.describe('battery')
         ''')
-        self.assertEqual(r, {'saved': ['battery', True, True], 'mode': '0o600', 'restarted': 'Unplugged 0:00:30 ago'})
+        self.assertEqual(r, {'saved': ['battery', True, 70], 'mode': '0o600',
+                             'after_reboot': 'Unplugged 0:21:30 ago', 'after_charging': 'Unplugged at least 0:00:00 ago'})
 
     def test_a_broken_timer_never_stops_the_profile_switch(self):
         r = self.scenario('''

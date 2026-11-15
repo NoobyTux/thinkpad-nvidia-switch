@@ -32,8 +32,10 @@ class TimerTestCase(unittest.TestCase):
         self.path = Path(self.directory.name) / 'config' / 'unplug-timer.json'
         self.clock = Clock()
 
-    def timer(self, boot='boot-1'):
-        return UnplugTimer(self.path, boot_id=boot, clock=self.clock)
+    level = None                                    # the battery level the fake gauge reports (None: unreadable)
+
+    def timer(self):
+        return UnplugTimer(self.path, clock=self.clock, capacity=lambda: self.level)
 
     def saved(self):
         return json.loads(self.path.read_text())
@@ -122,21 +124,28 @@ class WatchingTheChargerTests(TimerTestCase):
 
 
 class RestartTests(TimerTestCase):
+    """The app restarts (for example after an upgrade)."""
+
+    def run_for(self, timer, minutes, level=None):
+        for _ in range(minutes):                    # the app runs; its readings keep the record fresh
+            self.clock.advance(60)
+            if level is not None:
+                self.level = level
+            timer.update('battery')
+
     def test_a_quick_restart_does_not_reset_the_timer(self):
         first = self.timer()
         first.update('ac')
         self.clock.advance(30)
         first.update('battery')
-        for _ in range(30):                         # the app runs for half an hour; its readings keep the record fresh
-            self.clock.advance(60)
-            first.update('battery')
+        self.run_for(first, 30)
         self.clock.advance(5)
-        second = self.timer()                       # for example the app was restarted by an upgrade
+        second = self.timer()
         second.update('battery')
         self.assertEqual(second.describe('battery'), 'Unplugged 0:30:05 ago')
         self.assertTrue(second.record['exact'])
 
-    def test_unplugging_while_the_app_restarted_is_a_lower_bound(self):
+    def test_unplugging_while_the_app_was_not_running_is_a_lower_bound(self):
         first = self.timer()
         first.update('ac')
         self.clock.advance(60)
@@ -145,7 +154,7 @@ class RestartTests(TimerTestCase):
         self.assertFalse(second.record['exact'])
         self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
 
-    def test_plugging_in_while_the_app_restarted_keeps_the_last_unplugging(self):
+    def test_plugging_in_while_the_app_was_not_running_keeps_the_last_unplugging(self):
         first = self.timer()
         first.update('ac')
         first.update('battery')
@@ -155,61 +164,183 @@ class RestartTests(TimerTestCase):
         self.assertTrue(second.record['exact'])
         self.assertEqual(second.describe('ac'), 'Last unplugged 0:05:00 ago')
 
-    def test_a_long_gap_starts_again(self):
-        first = self.timer()
-        first.update('ac')
-        first.update('battery')
-        self.clock.advance(unplug_timer.TRUST_SECONDS + 1)
-        second = self.timer()
-        second.update('battery')
-        self.assertFalse(second.record['exact'])
-        self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
-
-    def test_a_long_gap_on_the_charger_forgets_the_old_unplugging(self):
-        first = self.timer()
-        first.update('ac')
-        first.update('battery')
-        first.update('ac')
-        self.clock.advance(unplug_timer.TRUST_SECONDS + 1)
-        second = self.timer()
-        second.update('ac')
-        self.assertEqual(second.describe('ac'), 'No unplugging seen yet')
-
-    def test_another_boot_starts_again(self):
-        first = self.timer(boot='boot-1')
-        first.update('ac')
-        first.update('battery')
-        self.clock.advance(20)
-        second = self.timer(boot='boot-2')
-        second.update('battery')
-        self.assertFalse(second.record['exact'])
-        self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
-
-    def test_an_unknown_boot_is_never_trusted(self):
-        first = self.timer(boot='')
-        first.update('ac')
-        first.update('battery')
-        self.clock.advance(20)
-        second = self.timer(boot='')
-        second.update('battery')
-        self.assertFalse(second.record['exact'])
-
-    def test_a_clock_that_went_backwards_is_not_trusted(self):
-        first = self.timer()
-        first.update('ac')
-        first.update('battery')
-        self.clock.advance(-3600)
-        second = self.timer()
-        second.update('battery')
-        self.assertFalse(second.record['exact'])
-        self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
-
     def test_the_text_never_shows_negative_time(self):
         timer = self.timer()
         timer.update('ac')
         timer.update('battery')
         self.clock.advance(-100)
         self.assertEqual(timer.describe('battery'), 'Unplugged 0:00:00 ago')
+
+
+class RebootTests(TimerTestCase):
+    """The laptop is rebooted or powered off, so the app is not running for a while.
+
+    Reported: unplug, use the laptop on battery for 20 minutes, reboot: the counter started again at 0.
+    """
+
+    def unplugged_for(self, minutes, level=80):
+        timer = self.timer()
+        self.level = level
+        timer.update('ac')
+        self.clock.advance(30)
+        timer.update('battery')
+        for _ in range(minutes):
+            self.clock.advance(60)
+            self.level -= 0.5
+            timer.update('battery')                  # (once a minute the record, with the battery level, is rewritten)
+        return timer
+
+    def test_a_reboot_keeps_the_time(self):
+        first = self.unplugged_for(20)
+        self.clock.advance(90)                       # shut down, boot, log in, the app starts
+        second = self.timer()
+        second.update('battery')
+        self.assertEqual(second.describe('battery'), 'Unplugged 0:21:30 ago')       # the reboot counts: still unplugged
+        self.assertTrue(second.record['exact'])                                      # it was seen happening
+        self.assertEqual(second.record['unplugged_at'], first.record['unplugged_at'])
+
+    def test_it_keeps_counting_after_the_reboot(self):
+        self.unplugged_for(20)
+        self.clock.advance(90)
+        second = self.timer()
+        second.update('battery')
+        self.run_for_minutes(second, 10)
+        self.assertEqual(second.describe('battery'), 'Unplugged 0:31:30 ago')
+
+    def run_for_minutes(self, timer, minutes):
+        for _ in range(minutes):
+            self.clock.advance(60)
+            timer.update('battery')
+
+    def test_a_power_off_for_hours_while_unplugged_still_counts(self):
+        self.unplugged_for(20, level=60)
+        self.clock.advance(3 * 3600)                 # off for three hours; the battery only went down
+        self.level = 49                              # it was at 50 percent when the laptop went off
+        second = self.timer()
+        second.update('battery')
+        self.assertEqual(second.describe('battery'), 'Unplugged 3:20:00 ago')
+
+    def test_charging_while_the_laptop_was_off_starts_again(self):
+        self.unplugged_for(20, level=40)
+        self.clock.advance(2 * 3600)                 # plugged in, charged, unplugged again, booted
+        self.level = 100
+        second = self.timer()
+        second.update('battery')
+        self.assertFalse(second.record['exact'])
+        self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
+
+    def test_a_small_rise_of_the_battery_level_is_not_charging(self):
+        first = self.unplugged_for(20, level=50)
+        self.clock.advance(600)
+        self.level = first.record['capacity'] + unplug_timer.CHARGE_TOLERANCE_PERCENT        # a gauge reads a bit higher after a rest
+        second = self.timer()
+        second.update('battery')
+        self.assertTrue(second.record['exact'])
+        self.assertEqual(second.describe('battery'), 'Unplugged 0:30:00 ago')
+
+    def test_a_rise_beyond_the_tolerance_is_charging(self):
+        first = self.unplugged_for(20, level=50)
+        self.clock.advance(600)
+        self.level = first.record['capacity'] + unplug_timer.CHARGE_TOLERANCE_PERCENT + 0.5
+        second = self.timer()
+        second.update('battery')
+        self.assertFalse(second.record['exact'])
+
+    def test_an_unreadable_battery_level_does_not_break_the_continuity(self):
+        self.unplugged_for(20)
+        self.clock.advance(90)
+        self.level = None
+        second = self.timer()
+        second.update('battery')
+        self.assertEqual(second.describe('battery'), 'Unplugged 0:21:30 ago')
+        third = UnplugTimer(self.path, clock=self.clock, capacity=lambda: (_ for _ in ()).throw(OSError('no battery')))
+        self.clock.advance(60)
+        third.update('battery')                      # a gauge that raises is the same as one that is unreadable
+        self.assertEqual(third.describe('battery'), 'Unplugged 0:22:30 ago')
+
+    def test_it_was_on_the_charger_when_the_laptop_went_off_and_unplugged_before_the_boot(self):
+        first = self.timer()
+        self.level = 100
+        first.update('ac')
+        self.clock.advance(3600)
+        second = self.timer()
+        second.update('battery')
+        self.assertFalse(second.record['exact'])
+        self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
+
+    def test_it_was_plugged_in_before_the_reboot_and_the_last_unplugging_stays(self):
+        first = self.unplugged_for(20)
+        first.update('ac')
+        self.clock.advance(1800)
+        second = self.timer()
+        second.update('ac')
+        self.assertEqual(second.describe('ac'), 'Last unplugged 0:50:00 ago')
+        self.assertTrue(second.record['exact'])
+
+    def test_it_stays_on_the_charger_across_the_reboot(self):
+        first = self.unplugged_for(20)
+        first.update('ac')
+        self.clock.advance(600)
+        second = self.timer()
+        second.update('ac')
+        self.clock.advance(60)
+        third = self.timer()                         # and once more
+        third.update('ac')
+        self.assertEqual(third.describe('ac'), 'Last unplugged 0:31:00 ago')
+
+    def test_a_record_older_than_a_week_is_not_believed(self):
+        self.unplugged_for(20)
+        self.clock.advance(unplug_timer.MAX_GAP_SECONDS + 1)
+        second = self.timer()
+        second.update('battery')
+        self.assertFalse(second.record['exact'])
+        self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
+        third = self.timer()                         # on the charger the old unplugging is forgotten too
+        self.clock.advance(unplug_timer.MAX_GAP_SECONDS + 1)
+        fourth = self.timer()
+        fourth.update('ac')
+        self.assertEqual(fourth.describe('ac'), 'No unplugging seen yet')
+        self.assertIsNotNone(third)
+
+    def test_just_under_a_week_is_still_believed(self):
+        self.unplugged_for(20)
+        self.clock.advance(unplug_timer.MAX_GAP_SECONDS - 1)
+        second = self.timer()
+        second.update('battery')
+        self.assertTrue(second.record['exact'])
+        self.assertTrue(second.describe('battery').startswith('Unplugged 7 d '))
+
+    def test_a_clock_that_went_backwards_is_not_believed(self):
+        self.unplugged_for(20)
+        self.clock.advance(-3600)                    # for example a clock that is wrong until it is synchronised
+        second = self.timer()
+        second.update('battery')
+        self.assertFalse(second.record['exact'])
+        self.assertEqual(second.describe('battery'), 'Unplugged at least 0:00:00 ago')
+
+    def test_a_record_from_the_previous_version_is_accepted(self):
+        # 2.9.0 and earlier wrote a boot id and no battery level.
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps({'version': 1, 'unplugged_at': self.clock.now - 1200, 'exact': True,
+                                         'source': 'battery', 'boot_id': 'a1b2', 'seen': self.clock.now - 60}))
+        timer = self.timer()
+        timer.update('battery')
+        self.assertEqual(timer.describe('battery'), 'Unplugged 0:20:00 ago')
+        self.assertNotIn('boot_id', self.saved())                                   # and it is rewritten without it
+
+    def test_the_battery_level_is_saved_with_the_record(self):
+        timer = self.timer()
+        self.level = 73
+        timer.update('ac')
+        self.assertEqual(self.saved()['capacity'], 73)
+        self.clock.advance(61)
+        self.level = 72
+        timer.update('ac')
+        self.assertEqual(self.saved()['capacity'], 72)                              # refreshed with each heartbeat
+        self.level = None
+        self.clock.advance(61)
+        timer.update('ac')
+        self.assertIsNone(self.saved()['capacity'])
 
 
 class StorageTests(TimerTestCase):
@@ -259,12 +390,18 @@ class StorageTests(TimerTestCase):
                                          'unplugged_at': None, 'boot_id': 7, 'extra': 'ignored'}))
         record = self.timer().record
         self.assertEqual(record, {'version': 1, 'unplugged_at': None, 'exact': False, 'source': None,
-                                  'boot_id': '', 'seen': self.clock.now})
+                                  'seen': self.clock.now, 'capacity': None})
+
+    def test_an_impossible_battery_level_is_dropped(self):
+        self.path.parent.mkdir(parents=True)
+        for bad in (150, -5, 'full', True, float('nan')):
+            self.path.write_text(json.dumps({'version': 1, 'seen': self.clock.now, 'source': 'ac', 'unplugged_at': None, 'capacity': bad}))
+            self.assertIsNone(self.timer().record['capacity'], bad)
 
     def test_a_folder_that_cannot_be_written_does_not_break_the_timer(self):
         blocker = Path(self.directory.name) / 'blocker'
         blocker.write_text('a file where the config folder should be')
-        timer = UnplugTimer(blocker / 'config' / 'unplug-timer.json', boot_id='b', clock=self.clock)
+        timer = UnplugTimer(blocker / 'config' / 'unplug-timer.json', clock=self.clock)
         timer.update('ac')
         self.clock.advance(5)
         timer.update('battery')
@@ -281,12 +418,6 @@ class StorageTests(TimerTestCase):
         timer.update('battery')
         self.assertIsNotNone(timer.write_error)
         self.assertEqual(timer.describe('battery'), 'Unplugged at least 0:00:00 ago')
-
-    def test_boot_id_is_read_from_the_kernel(self):
-        path = Path(self.directory.name) / 'boot_id'
-        path.write_text('abc-123\n')
-        self.assertEqual(unplug_timer.current_boot_id(path), 'abc-123')
-        self.assertEqual(unplug_timer.current_boot_id(Path(self.directory.name) / 'missing'), '')
 
 
 if __name__ == '__main__':

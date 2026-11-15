@@ -59,7 +59,7 @@ DRIVER_OVERRIDE_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-driver-overrid
 PCI_MASK_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-config-mask.json')
 DETACHED_MARKER = Path('/var/lib/thinkpad-nvidia-switch/pci-detached.json')
 APP_NAME = 'ThinkPad Nvidia Switch'
-APP_VERSION = '2.9.0'
+APP_VERSION = '2.9.1'
 APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'thinkpad-nvidia-switch.svg'
 ASSET_DIR = Path(__file__).resolve().parent.parent / 'assets'
 CHECKBOX_CHECKMARK = (ASSET_DIR / 'checkbox-checkmark.png').as_posix()
@@ -1630,7 +1630,8 @@ class MainWindow(QMainWindow):
         self.unplug_label.setObjectName('muted')
         self.unplug_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.unplug_label.setToolTip('How long ago the charger was last unplugged. The time is counted from the moment this app '
-                                     'noticed it; "at least" means the app only started watching afterwards.')
+                                     'noticed it and keeps counting through a restart, a reboot or a power-off while the laptop stays '
+                                     'unplugged; "at least" means the app only started watching afterwards.')
         caption_row.addWidget(self.unplug_label)
         battery_layout.addLayout(caption_row)
         battery_layout.addWidget(self.battery_label)
@@ -1979,7 +1980,7 @@ class MainWindow(QMainWindow):
         self.power_candidate_count = 0
         self.stable_power_source = None
         self.power_confirmed = False
-        self.unplug_timer = UnplugTimer(UNPLUG_FILE)
+        self.unplug_timer = UnplugTimer(UNPLUG_FILE, capacity=lambda: battery_snapshot()['capacity'])
         self.unplug_timer_failed = False
         self.profile_running_profile = None
         self.profile_process = None

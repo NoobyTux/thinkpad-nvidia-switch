@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.9.1 — The unplug timer keeps its time through a reboot or power-off (2026-11-15)
+
+### Fixed
+
+- **The time since unplugging started again after a reboot.** Unplug, use the laptop on battery for 20 minutes, reboot or power off: the counter was back at 0 when the app started. The saved time was only believed within the same boot and for ten minutes. It is now believed across boots, because the record also keeps the power source and the battery level that were last seen and the next start can tell what happened in between: still on battery with a battery level that has not risen clearly (more than 3 percentage points) is the same unplugging, and the time keeps counting, including the time the laptop was off; a battery that was charged meanwhile, or a laptop that was on the charger when it went off and is on battery now, starts again and says *at least*; a laptop that is on the charger now keeps its last unplugging (*Last unplugged … ago* continues instead of *No unplugging seen yet*). A record older than a week or from the future (the clock went back) is not believed. Records written by 2.7.0 to 2.9.0 are still read; the boot id they contained is no longer used.
+- Limits, written down in the README: a charger connected so briefly that the battery level did not rise by more than the tolerance cannot be told from none, and a laptop that was unplugged and plugged in again while the app was not running shows the older unplugging when it is on the charger at the next start.
+
+### Project
+
+- Reboot tests for each case above (20 minutes then a reboot, hours off, charged while off, a small rise of the gauge, an unreadable gauge, on the charger at shutdown or at boot, a week, a clock that went back, a record from 2.9.0) and a window test of the saved file across a reboot; the boot-id tests were replaced; 359 → 369 automated tests.
+
 ## 2.9.0 — Xwayland is closed automatically when it keeps NVIDIA from switching off (2026-11-15)
 
 ### Changed
