@@ -61,6 +61,12 @@ def _last_reason(details):
     return (lines[-1] if lines else 'The operation failed.')[:220]
 
 
+def xwayland_offer_text():
+    """Shown with the "Close X11 programs and try again" button."""
+    return ('You can also close Xwayland now: every X11 program (for example Steam or Wine/Proton games) will close; '
+            'Wayland programs and this app are not affected. NVIDIA is then switched off again.')
+
+
 def gpu_failure_message(action, details, in_use=()):
     """(title, text) for a failed manual GPU or protection switch; never the raw helper output.
 

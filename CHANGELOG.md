@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.8.0 — Close Xwayland from the app to release leftover NVIDIA graphics buffers (2026-11-15)
+
+### Added
+
+- **"Close X11 programs and try again".** When turning NVIDIA off fails because a graphics buffer that NVIDIA shared with the desktop is still alive (the *NVIDIA graphics buffers still alive* case of 2.7.1), the failure dialog on a Wayland desktop now offers to close Xwayland. Confirmed on a ThinkPad T440p (NVIDIA 470.256.02): restarting the Plasma panel did not help, `pkill -x Xwayland` dropped the `nvidia_drm` reference count from 1 to 0 and NVIDIA could be switched off without logging out. The app does the same on request: it asks Xwayland (SIGTERM, only your own user's processes, nothing else) to exit, waits until it is gone and `nvidia_drm`'s reference count has dropped (at most about ten seconds, then it tries anyway), and turns NVIDIA off again. Every X11 program closes (for example Steam or Wine/Proton games); Wayland programs and the app itself are not affected, and the desktop starts Xwayland again when an X11 program is launched. Cancel is the default button.
+- The option appears only when it is safe and useful: a Wayland session, the app running as a Wayland program (an app on X11 would close itself), a running Xwayland, no program named as holding NVIDIA, and a visible window. In every other case the message says to log out and back in, as before. Automatic profile switching never closes anything.
+
+### Changed
+
+- The advice for a leftover buffer now says that the desktop *usually Xwayland* keeps it and mentions closing Xwayland as well as logging out.
+
+### Project
+
+- 10 tests for the process and kernel helpers (`xwayland_release.py`, no real processes) and 10 for the dialog and the wait-and-retry flow (the choice, Cancel as default, not offered when it is not possible, a hidden window, waiting for Xwayland and the kernel, Xwayland refusing to close, a reference that stays, nothing to close); 323 → 343 automated tests.
+
 ## 2.7.1 — Leftover graphics buffers are named when NVIDIA will not turn off (2026-11-15)
 
 ### Fixed

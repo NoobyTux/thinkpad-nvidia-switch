@@ -64,6 +64,15 @@ CHILD_PRELUDE = textwrap.dedent('''
 ''' % str(SRC))
 
 
+def run_child_script(script):
+    """Run a complete child script that prints RESULT=<json>; returns (result, stderr)."""
+    done = subprocess.run([sys.executable, '-I', '-c', textwrap.dedent(script)], capture_output=True, text=True, timeout=180)
+    marker = [line for line in done.stdout.splitlines() if line.startswith('RESULT=')]
+    if not marker:
+        raise AssertionError(f'child produced no result.\nstdout:\n{done.stdout}\nstderr:\n{done.stderr}')
+    return json.loads(marker[-1][len('RESULT='):]), done.stderr
+
+
 def run_child(body, settings=None):
     """Run ``body`` after importing the real GUI module; return its JSON result and stderr."""
     script = CHILD_PRELUDE
@@ -1831,7 +1840,8 @@ class DriverInUseExplanationTests(unittest.TestCase):
         self.with_bufinfo(self.BUFINFO)
         message = self.unload_failure()
         self.assertIn('NVIDIA graphics buffers still alive: 1.', message)
-        self.assertIn('Log out and back in', message)
+        self.assertIn('usually Xwayland', message)
+        self.assertIn('Closing Xwayland or logging out and back in releases it.', message)
         self.assertNotIn('No program was found', message)
         import profiles
         self.assertEqual(profiles.shared_buffer_count(message), 1)                    # the GUI understands the helper's sentence
@@ -2087,6 +2097,200 @@ class UnplugTimerWindowTests(unittest.TestCase):
         self.assertIn('unplug-timer.json', text)
         self.assertIn('"$UNPLUG_STATE"', text[text.index('Removing user files'):])
         self.assertIn("UNPLUG_FILE = CONFIG_DIR / 'unplug-timer.json'", (SRC / 'optimus_tray.py').read_text())
+
+
+@unittest.skipUnless(QT, 'PySide6 (and its system libraries) is not available')
+class XwaylandWindowTests(unittest.TestCase):
+    """A graphics buffer that NVIDIA shared with the desktop is still alive: the dialog offers to close Xwayland.
+
+    On a ThinkPad T440p (NVIDIA 470) `pkill -x Xwayland` was what released the buffer and let NVIDIA switch off.
+    """
+
+    SETUP = GpuSwitchTests.SETUP.replace("[('Steam', True)]", "[]") + '''
+        asked, terminated = [], []
+        t.restart_possible = lambda *args: True                    # the test runs on the offscreen platform
+        t.xwayland_pids = lambda: [4321]
+        t.MainWindow._ask_close_xwayland = lambda self, title, text: asked.append((title, text)) or answer['yes']
+        answer = {'yes': False}
+        BUFFER_FAILURE = ('echo "Command failed: modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia" >&2; '
+                          'echo "modprobe: FATAL: Module nvidia_drm is in use." >&2; '
+                          'echo "NVIDIA graphics buffers still alive: 1. No program has an NVIDIA device open." >&2; exit 1')
+        # the first run fails because of the buffer, the second (after Xwayland was closed) works
+        RETRY = ('echo x >> COUNT; if [ "$(wc -l < COUNT)" -ge 2 ]; then echo D3cold > MARK; echo "NVIDIA modules unloaded."; '
+                 'else ' + BUFFER_FAILURE.replace('; exit 1', '') + '; exit 1; fi')
+    '''
+
+    def scenario(self, body):
+        result, stderr = run_child(textwrap.dedent(self.SETUP) + '\n' + textwrap.dedent(body))
+        self.assertNotIn('Traceback', stderr)
+        return result
+
+    def test_the_failure_dialog_offers_closing_xwayland_with_cancel_as_the_default(self):
+        r = self.scenario('''
+            helper(BUFFER_FAILURE)
+            w.toggle_gpu()
+            result['finished'] = until(lambda: not w.power_btn.isBusy())
+            result['asked'] = len(asked); result['plain_dialogs'] = len(shown)
+            result['title'], result['text'] = asked[0]
+            result['closed_anything'] = bool(terminated)
+            result['label_after'] = w.power_btn.text()
+        ''')
+        self.assertTrue(r['finished'])
+        self.assertEqual((r['asked'], r['plain_dialogs'], r['closed_anything']), (1, 0, False))       # Cancel did nothing
+        self.assertEqual(r['title'], "Can't turn NVIDIA off")
+        self.assertIn('NVIDIA cannot be turned off because a graphics buffer left over from a game is still alive.', r['text'])
+        self.assertIn('usually Xwayland', r['text'])
+        self.assertIn('every X11 program (for example Steam or Wine/Proton games) will close', r['text'])
+        self.assertIn('Wayland programs and this app are not affected', r['text'])
+        self.assertEqual(r['label_after'], 'Turn NVIDIA OFF')
+
+    def test_the_dialog_buttons(self):
+        result, stderr = run_child_script(CHILD_BOX)
+        self.assertNotIn('Traceback', stderr)
+        self.assertEqual(sorted(result['buttons']), ['Cancel', 'Close X11 programs and try again'])    # the order is the style's
+        self.assertEqual(result['default'], 'Cancel')
+        self.assertEqual(result['escape'], 'Cancel')
+        self.assertFalse(result['chose_close'])                           # nothing was clicked
+
+    def test_no_offer_when_closing_xwayland_is_not_possible(self):
+        r = self.scenario('''
+            t.restart_possible = lambda *args: False               # an X11 session, or this app runs on Xwayland itself
+            helper(BUFFER_FAILURE)
+            w.toggle_gpu()
+            result['finished'] = until(lambda: not w.power_btn.isBusy())
+            result['asked'] = len(asked); result['text'] = shown[0][1]
+        ''')
+        self.assertEqual(r['asked'], 0)
+        self.assertIn('a graphics buffer left over from a game is still alive', r['text'])
+        self.assertIn('Log out and back in', r['text'])
+        self.assertNotIn('close Xwayland now', r['text'])
+
+    def test_no_offer_while_a_program_is_named(self):
+        r = self.scenario('''
+            helper('echo "modprobe: FATAL: Module nvidia_drm is in use." >&2; '
+                   'echo "NVIDIA is held open by: blender (PID 4242). Close them and try again." >&2; exit 1')
+            w.toggle_gpu()
+            result['finished'] = until(lambda: not w.power_btn.isBusy())
+            result['asked'] = len(asked); result['text'] = shown[0][1]
+        ''')
+        self.assertEqual(r['asked'], 0)
+        self.assertIn('it is in use by blender', r['text'])
+
+    def test_a_hidden_window_gets_a_notification_not_a_question(self):
+        r = self.scenario('''
+            helper(BUFFER_FAILURE)
+            w.hide(); pump()
+            w.tray_toggle.trigger()
+            result['finished'] = until(lambda: not w.power_btn.isBusy())
+            result['asked'] = len(asked); result['dialogs'] = len(shown); result['balloons'] = len(balloons)
+        ''')
+        self.assertEqual((r['asked'], r['dialogs'], r['balloons']), (0, 0, 1))
+
+    def test_choosing_to_close_xwayland_waits_then_turns_nvidia_off_again(self):
+        r = self.scenario('''
+            answer['yes'] = True
+            alive = [True, True]                                  # Xwayland needs a moment to exit
+            t.terminate_xwayland = lambda: terminated.append(1) or [4321]
+            t.process_alive = lambda pid: alive.pop(0) if alive else False
+            references = [1, 0]                                   # and the kernel a moment to drop its reference
+            t.nvidia_drm_references = lambda: references.pop(0) if len(references) > 1 else references[0]
+            helper(RETRY)
+            w.toggle_gpu()
+            result['waiting'] = until(lambda: w.power_btn.text() == 'Closing X11 programs…', 3.0)
+            result['busy_while_waiting'] = w.power_btn.isBusy()
+            result['finished'] = until(lambda: counter.read_text().count('x') >= 2 and not w.power_btn.isBusy(), 10.0)
+            result['runs'] = counter.read_text().count('x')
+            result['state'] = marker.read_text().strip()
+            result['closed'] = len(terminated)
+            result['label'] = w.power_btn.text()
+            result['log'] = t.LOG_FILE.read_text()
+        ''')
+        self.assertTrue(r['waiting'])
+        self.assertTrue(r['busy_while_waiting'])
+        self.assertTrue(r['finished'])
+        self.assertEqual((r['runs'], r['state'], r['closed']), (2, 'D3cold', 1))
+        self.assertEqual(r['label'], 'Turn NVIDIA ON')
+        self.assertIn('Closed Xwayland (PID 4321) at your request', r['log'])
+        self.assertIn('Xwayland has closed; NVIDIA display driver references: 0. Turning NVIDIA off again.', r['log'])
+
+    def test_if_xwayland_does_not_close_nothing_else_happens(self):
+        r = self.scenario('''
+            answer['yes'] = True
+            t.terminate_xwayland = lambda: terminated.append(1) or [4321]
+            t.process_alive = lambda pid: True                    # it ignores the request
+            helper(RETRY)
+            w.toggle_gpu()
+            until(lambda: w.power_btn.text() == 'Closing X11 programs…', 3.0)
+            w.xwayland_wait['deadline'] = time.monotonic() - 1    # do not wait the whole ten seconds
+            result['finished'] = until(lambda: not w.power_btn.isBusy(), 3.0)
+            result['runs'] = counter.read_text().count('x')
+            result['text'] = shown[-1][1]
+            result['timer_stopped'] = not w.xwayland_timer.isActive()
+        ''')
+        self.assertTrue(r['finished'])
+        self.assertEqual(r['runs'], 1)                            # NVIDIA was not touched again
+        self.assertIn('Xwayland did not close', r['text'])
+        self.assertTrue(r['timer_stopped'])
+
+    def test_an_xwayland_that_is_already_gone_just_retries(self):
+        r = self.scenario('''
+            answer['yes'] = True
+            t.terminate_xwayland = lambda: terminated.append(1) or []
+            helper(RETRY)
+            w.toggle_gpu()
+            result['finished'] = until(lambda: counter.read_text().count('x') >= 2 and not w.power_btn.isBusy(), 6.0)
+            result['runs'] = counter.read_text().count('x'); result['state'] = marker.read_text().strip()
+        ''')
+        self.assertTrue(r['finished'])
+        self.assertEqual((r['runs'], r['state']), (2, 'D3cold'))
+
+    def test_a_reference_that_stays_does_not_block_the_retry_for_ever(self):
+        r = self.scenario('''
+            answer['yes'] = True
+            t.terminate_xwayland = lambda: terminated.append(1) or [4321]
+            t.process_alive = lambda pid: False                   # Xwayland is gone at once
+            t.nvidia_drm_references = lambda: 1                   # but the buffer is not released
+            helper(RETRY)
+            start = time.monotonic()
+            w.toggle_gpu()
+            result['finished'] = until(lambda: counter.read_text().count('x') >= 2, 8.0)
+            result['waited'] = time.monotonic() - start
+            result['runs'] = counter.read_text().count('x')
+        ''')
+        self.assertTrue(r['finished'])
+        self.assertEqual(r['runs'], 2)
+        self.assertGreaterEqual(r['waited'], 3.0)                 # it gave the kernel about three seconds first
+        self.assertLess(r['waited'], 7.0)
+
+    def test_the_dialog_text_comes_from_one_place(self):
+        import notification_rules
+        text = notification_rules.xwayland_offer_text()
+        self.assertIn('close Xwayland now', text)
+        source = (SRC / 'optimus_tray.py').read_text()
+        self.assertIn('xwayland_offer_text()', source)
+        self.assertIn("'Close X11 programs and try again'", source)
+
+
+CHILD_BOX = '''
+    import json, os, sys, tempfile
+    from pathlib import Path
+    home = tempfile.mkdtemp(prefix='tpns-test-home-')
+    os.environ.update(HOME=home, XDG_RUNTIME_DIR=home, QT_QPA_PLATFORM='offscreen', OPTIMUS_PCI='0000:01:00.0')
+    (Path(home) / '.config' / 'thinkpad-nvidia-switch').mkdir(parents=True)
+    sys.path.insert(0, %r)
+    sys.argv = ['optimus_tray.py']
+    import optimus_tray as t
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    app = QApplication(sys.argv)
+    box_seen = []
+    QMessageBox.exec = lambda self: box_seen.append(self) or 0
+    w = t.MainWindow()
+    chose = w._ask_close_xwayland('Title', 'Text')
+    box = box_seen[0]
+    result = {'buttons': [b.text() for b in box.buttons()], 'default': box.defaultButton().text(),
+              'escape': box.escapeButton().text(), 'chose_close': chose}
+    print("RESULT=" + json.dumps(result)); sys.stdout.flush(); os._exit(0)
+''' % str(SRC)
 
 
 if __name__ == '__main__':

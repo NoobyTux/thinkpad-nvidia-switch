@@ -167,9 +167,9 @@ def explain_busy(details, extra_names=(), again='try again'):
     if buffers:
         return ('a graphics buffer left over from a game is still alive' if buffers == 1 else
                 f'{buffers} graphics buffers left over from a game are still alive',
-                f'No program has NVIDIA open: the desktop (KWin or Xwayland) keeps {"it" if buffers == 1 else "them"}. '
-                f'Log out and back in to release {"it" if buffers == 1 else "them"}, then {again}. '
-                'If that does not help, restart the computer.')
+                f'No program has NVIDIA open: the desktop keeps {"it" if buffers == 1 else "them"}, usually Xwayland (the '
+                f'layer that runs X11 programs). Log out and back in to release {"it" if buffers == 1 else "them"}, '
+                f'then {again}. If that does not help, restart the computer.')
     return ('it is still in use, but no program holding it was found',
             'The display driver itself may be holding it. See View activity log and the README troubleshooting table.')
 

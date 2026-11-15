@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-RELEASE_VERSION="2.7.1"
+RELEASE_VERSION="2.8.0"
 
 SYSTEM_CONFIG_DIR=/etc/thinkpad-nvidia-switch
 SYSTEM_GPU_CONFIG="$SYSTEM_CONFIG_DIR/gpu-pci-address"

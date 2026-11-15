@@ -877,8 +877,8 @@ def explain_driver_in_use(pci):
     if buffers:
         # Keep this sentence in sync with profiles.shared_buffer_count().
         return (f'NVIDIA graphics buffers still alive: {len(buffers)}. No program has an NVIDIA device open, but the '
-                'desktop (KWin or Xwayland) usually keeps a buffer like this after a game, and it keeps the driver loaded. '
-                'Log out and back in to release it.')
+                'desktop, usually Xwayland (the layer that runs X11 programs), keeps a buffer like this after a game, and it '
+                'keeps the driver loaded. Closing Xwayland or logging out and back in releases it.')
     return ('No program was found holding an NVIDIA device open, so the driver may be held by a kernel component or by a '
             'graphics buffer the desktop kept after a game. Logging out and back in often releases the second kind. '
             'Details are in the technical log; see the README troubleshooting table.')
