@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.10.1 — The timer counts only the time the laptop is running on battery (2026-11-15)
+
+### Fixed
+
+- **The timer also counted the time the laptop was shut down.** Since 2.9.1 the timer kept its time through a reboot or power-off, but it was the wall-clock time since the unplugging, so every minute the laptop was off was counted. It now adds up the time the laptop is **running on battery**: the unplugging is still the moment the app sees it, and from then on the running time is measured with the monotonic clock, which does not advance during sleep. Time while the laptop is powered off or asleep is not counted; on the charger the timer stops and shows the length of the last time on battery.
+- The text follows the new meaning: *On battery for 1:23:45* (with *at least* when the app did not see the unplugging itself) and, on the charger, *Last time on battery: 1:23:45*; the tooltip says what is and is not counted.
+- Across a reboot the record decides what to add: on the same boot the time since the last write was spent running and is added; after a reboot the time off is not counted but the boot itself is (the monotonic time at the start of the app); a battery that was charged meanwhile or a laptop that was on the charger at shutdown starts again with *at least*; a record older than a week or from the future is not believed. The record now also keeps the boot id and the monotonic time of its last write (record version 2). **Records of 2.7.0 to 2.10.0 are read, but their total starts again at 0 with *at least***, because it also contained the time the laptop was off and cannot be corrected.
+- The record is written once more when the app is closed by the desktop (for example at shutdown), so no running time is lost; otherwise up to a minute before a sudden power loss is.
+
+### Project
+
+- 47 timer tests (the clocks, sleep, power-off for hours, two reboots in a row, charging while off, an unreadable battery level, an unknown boot id, records of earlier versions, the file) and 11 window tests; the old tests of the wall-clock rules were replaced; 374 → 389 automated tests. The README screenshots were re-rendered.
+
 ## 2.10.0 — The Xwayland notification can be switched off (2026-11-15)
 
 ### Added

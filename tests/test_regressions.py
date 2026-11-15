@@ -1961,7 +1961,7 @@ class RepeatedVoltageErrorTests(unittest.TestCase):
 
 @unittest.skipUnless(QT, 'PySide6 (and its system libraries) is not available')
 class UnplugTimerWindowTests(unittest.TestCase):
-    """The battery card shows how long ago the charger was last unplugged."""
+    """The battery card shows how long the laptop has been running on battery since the charger was unplugged."""
 
     SETUP = '''
         import time
@@ -1970,9 +1970,13 @@ class UnplugTimerWindowTests(unittest.TestCase):
         t.MainWindow.refresh_undervolt = lambda self: None
         source = {'now': 'ac'}
         t.power_source = lambda: source['now']
-        clock = {'now': 1_000_000.0}
+        clock = {'now': 1_000_000.0, 'mono': 5000.0}              # wall clock; monotonic clock (no sleep, no power-off)
         w = t.MainWindow(); w.resize(960, 900); w.show()
         w.unplug_timer.clock = lambda: clock['now']
+        w.unplug_timer.mono = lambda: clock['mono']
+        w.unplug_timer.boot_id = 'boot-1'
+        def advance(seconds):                                      # the laptop runs
+            clock['now'] += seconds; clock['mono'] += seconds
         def confirm():
             w.check_power_profile(); w.check_power_profile()
         def wait(seconds):
@@ -1991,64 +1995,86 @@ class UnplugTimerWindowTests(unittest.TestCase):
             result['start'] = w.unplug_label.text()
             confirm(); result['on_ac'] = w.unplug_label.text()
             source['now'] = 'battery'; confirm(); result['unplugged'] = w.unplug_label.text()
-            clock['now'] += 3725; w.refresh(); result['later'] = w.unplug_label.text()
+            advance(3725); w.refresh(); result['later'] = w.unplug_label.text()
             source['now'] = 'ac'; confirm(); result['plugged'] = w.unplug_label.text()
-            clock['now'] += 60; w.refresh(); result['plugged_later'] = w.unplug_label.text()
+            advance(3600); w.refresh(); result['plugged_later'] = w.unplug_label.text()      # on the charger it does not count
             source['now'] = 'battery'; confirm(); result['again'] = w.unplug_label.text()
         ''')
-        self.assertEqual(r, {'start': 'Unplugged: checking…', 'on_ac': 'No unplugging seen yet',
-                             'unplugged': 'Unplugged 0:00:00 ago', 'later': 'Unplugged 1:02:05 ago',
-                             'plugged': 'Last unplugged 1:02:05 ago', 'plugged_later': 'Last unplugged 1:03:05 ago',
-                             'again': 'Unplugged 0:00:00 ago'})
+        self.assertEqual(r, {'start': 'On battery: checking…', 'on_ac': 'No unplugging seen yet',
+                             'unplugged': 'On battery for 0:00:00', 'later': 'On battery for 1:02:05',
+                             'plugged': 'Last time on battery: 1:02:05', 'plugged_later': 'Last time on battery: 1:02:05',
+                             'again': 'On battery for 0:00:00'})
+
+    def test_sleep_and_power_off_do_not_count(self):
+        r = self.scenario('''
+            confirm(); source['now'] = 'battery'; confirm()
+            advance(600)
+            clock['now'] += 3 * 3600                                  # the lid was closed for three hours
+            w.refresh()
+            result['after_sleep'] = w.unplug_label.text()
+        ''')
+        self.assertEqual(r, {'after_sleep': 'On battery for 0:10:00'})
 
     def test_it_says_when_the_power_source_is_unknown(self):
         r = self.scenario('''
             source['now'] = None; confirm()
             result['text'] = w.unplug_label.text()
         ''')
-        self.assertEqual(r, {'text': 'Unplugged: power source not detected'})
+        self.assertEqual(r, {'text': 'On battery: power source not detected'})
 
     def test_a_hidden_window_does_not_update_the_label_but_catches_up_when_shown(self):
         r = self.scenario('''
             source['now'] = 'battery'; confirm()
             w.hide(); wait(0.1)
-            clock['now'] += 600; w.refresh()
+            advance(600); w.refresh()
             result['hidden'] = w.unplug_label.text()
             w.show(); wait(0.3)
             result['shown'] = w.unplug_label.text()
         ''')
         # the window started on battery, so the app did not see the unplugging itself: "at least"
-        self.assertEqual(r, {'hidden': 'Unplugged at least 0:00:00 ago', 'shown': 'Unplugged at least 0:10:00 ago'})
+        self.assertEqual(r, {'hidden': 'On battery for at least 0:00:00', 'shown': 'On battery for at least 0:10:00'})
 
-    def test_the_time_is_saved_privately_and_survives_a_reboot(self):
+    def test_the_total_is_saved_privately_and_survives_a_reboot(self):
         r = self.scenario('''
             import optimus_tray
             battery = {'level': 80}
             t.battery_snapshot = lambda: {'capacity': battery['level'], 'status': 'Discharging', 'discharge_w': 9.0,
                                           'charge_w': None, 'remaining': None, 'to_full': None}
             source['now'] = 'ac'; confirm()
-            clock['now'] += 5; source['now'] = 'battery'; confirm()
-            clock['now'] += 1200; battery['level'] = 70
-            w.unplug_timer.update('battery')                    # the once-a-minute rewrite: time seen, battery level
+            advance(5); source['now'] = 'battery'; confirm()
+            advance(1200); battery['level'] = 70
+            w.unplug_timer.update('battery')                    # the once-a-minute rewrite: the total, the battery level
             saved = json.loads(optimus_tray.UNPLUG_FILE.read_text())
-            result['saved'] = [saved['source'], saved['exact'], saved['capacity']]
+            result['saved'] = [saved['source'], saved['exact'], saved['elapsed'], saved['capacity'], saved['boot_id']]
             result['mode'] = oct(optimus_tray.UNPLUG_FILE.stat().st_mode & 0o777)
-            # the laptop is rebooted: a new window, with the clock 90 seconds later and the battery a little lower
+            # the laptop is rebooted: 30 seconds off, 60 seconds of booting, the battery a little lower
             from unplug_timer import UnplugTimer
             battery['level'] = 69
-            again = UnplugTimer(optimus_tray.UNPLUG_FILE, clock=lambda: clock['now'] + 90,
+            again = UnplugTimer(optimus_tray.UNPLUG_FILE, clock=lambda: clock['now'] + 90, mono=lambda: 60.0, boot_id='boot-2',
                                 capacity=lambda: t.battery_snapshot()['capacity'])
             again.update('battery')
             result['after_reboot'] = again.describe('battery')
             # ... and a laptop that was charged while it was off starts again
             battery['level'] = 100
-            charged = UnplugTimer(optimus_tray.UNPLUG_FILE, clock=lambda: clock['now'] + 7200,
+            charged = UnplugTimer(optimus_tray.UNPLUG_FILE, clock=lambda: clock['now'] + 7200, mono=lambda: 60.0, boot_id='boot-3',
                                   capacity=lambda: t.battery_snapshot()['capacity'])
             charged.update('battery')
             result['after_charging'] = charged.describe('battery')
         ''')
-        self.assertEqual(r, {'saved': ['battery', True, 70], 'mode': '0o600',
-                             'after_reboot': 'Unplugged 0:21:30 ago', 'after_charging': 'Unplugged at least 0:00:00 ago'})
+        self.assertEqual(r, {'saved': ['battery', True, 1200.0, 70, 'boot-1'], 'mode': '0o600',
+                             'after_reboot': 'On battery for 0:21:00', 'after_charging': 'On battery for at least 0:00:00'})
+
+    def test_closing_the_app_writes_the_latest_time(self):
+        r = self.scenario('''
+            import optimus_tray
+            source['now'] = 'ac'; confirm()
+            advance(5); source['now'] = 'battery'; confirm()
+            advance(25)                                         # nothing writes the record in these 25 seconds
+            result['before'] = json.loads(optimus_tray.UNPLUG_FILE.read_text())['elapsed']
+            app.aboutToQuit.emit()                              # the session ends: the app is closed by the desktop
+            result['after'] = json.loads(optimus_tray.UNPLUG_FILE.read_text())['elapsed']
+        ''')
+        self.assertEqual(r, {'before': 0.0, 'after': 25.0})
 
     def test_a_broken_timer_never_stops_the_profile_switch(self):
         r = self.scenario('''
@@ -2069,10 +2095,22 @@ class UnplugTimerWindowTests(unittest.TestCase):
         self.assertEqual(r['logged'], ['The unplug timer stopped working: disk on fire'])      # once, not every two seconds
         self.assertTrue(r['failed'])
 
+    def test_a_broken_timer_does_not_stop_the_app_from_closing(self):
+        r = self.scenario('''
+            logged = []
+            t.log_detail = logged.append
+            def broken():
+                raise RuntimeError('disk on fire')
+            w.unplug_timer.flush = broken
+            app.aboutToQuit.emit()                              # must not raise
+            result['logged'] = [m for m in logged if 'unplug timer' in m]
+        ''')
+        self.assertEqual(r['logged'], ['The unplug timer could not be saved at exit: disk on fire'])
+
     def test_the_longest_text_fits_in_the_card_at_a_narrow_width(self):
         r = self.scenario('''
             w.resize(560, 900); wait(0.3)
-            w.unplug_label.setText('Last unplugged at least 99 d 23:59:59 ago'); wait(0.3)
+            w.unplug_label.setText('Last time on battery: at least 99 d 23:59:59'); wait(0.3)
             card = w.unplug_label.parentWidget()
             while card is not None and card.objectName() != 'card':
                 card = card.parentWidget()
@@ -2099,7 +2137,7 @@ class UnplugTimerWindowTests(unittest.TestCase):
             spy = Spy(); app.installEventFilter(spy)
             start = w.unplug_label.text()
             for _ in range(3):
-                clock['now'] += 1; wait(1.0)                 # the window's own one-second refresh shows the new time
+                advance(1); wait(1.0)                        # the window's own one-second refresh shows the new time
             result['changed'] = w.unplug_label.text() != start
             result['per_second'] = (counts['paint'] + counts['layout']) / 3.0
         ''')

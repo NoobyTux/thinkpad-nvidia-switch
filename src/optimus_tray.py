@@ -59,7 +59,7 @@ DRIVER_OVERRIDE_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-driver-overrid
 PCI_MASK_STATE = Path('/var/lib/thinkpad-nvidia-switch/pci-config-mask.json')
 DETACHED_MARKER = Path('/var/lib/thinkpad-nvidia-switch/pci-detached.json')
 APP_NAME = 'ThinkPad Nvidia Switch'
-APP_VERSION = '2.10.0'
+APP_VERSION = '2.10.1'
 APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'thinkpad-nvidia-switch.svg'
 ASSET_DIR = Path(__file__).resolve().parent.parent / 'assets'
 CHECKBOX_CHECKMARK = (ASSET_DIR / 'checkbox-checkmark.png').as_posix()
@@ -1626,12 +1626,13 @@ class MainWindow(QMainWindow):
         caption_row.setSpacing(14)
         caption_row.addWidget(battery_caption)
         caption_row.addStretch(1)
-        self.unplug_label = QLabel('Unplugged: checking…')
+        self.unplug_label = QLabel('On battery: checking…')
         self.unplug_label.setObjectName('muted')
         self.unplug_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.unplug_label.setToolTip('How long ago the charger was last unplugged. The time is counted from the moment this app '
-                                     'noticed it and keeps counting through a restart, a reboot or a power-off while the laptop stays '
-                                     'unplugged; "at least" means the app only started watching afterwards.')
+        self.unplug_label.setToolTip('How long the laptop has been running on battery since the charger was last unplugged. '
+                                     'Time while it is powered off or asleep is not counted. On the charger the timer stops and shows '
+                                     'the length of the last time on battery. It is kept through a restart of the app, a reboot and a '
+                                     'power-off; "at least" means the app only started watching after the unplugging.')
         caption_row.addWidget(self.unplug_label)
         battery_layout.addLayout(caption_row)
         battery_layout.addWidget(self.battery_label)
@@ -1982,6 +1983,7 @@ class MainWindow(QMainWindow):
         self.power_confirmed = False
         self.unplug_timer = UnplugTimer(UNPLUG_FILE, capacity=lambda: battery_snapshot()['capacity'])
         self.unplug_timer_failed = False
+        QApplication.instance().aboutToQuit.connect(self._flush_unplug_timer)       # up to date when the session ends
         self.profile_running_profile = None
         self.profile_process = None
         self.profile_running_name = None
@@ -2665,6 +2667,12 @@ class MainWindow(QMainWindow):
             if not self.unplug_timer_failed:
                 self.unplug_timer_failed = True
                 log_operation(f'The unplug timer stopped working: {exc}')
+
+    def _flush_unplug_timer(self):
+        try:
+            self.unplug_timer.flush()
+        except Exception as exc:                           # a display feature must never hinder shutting down
+            log_detail(f'The unplug timer could not be saved at exit: {exc}')
 
     def _show_unplug_time(self):
         if self.power_confirmed:
