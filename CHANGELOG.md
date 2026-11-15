@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.7.1 — Leftover graphics buffers are named when NVIDIA will not turn off (2026-11-15)
+
+### Fixed
+
+- **Turning NVIDIA off after a game could fail with "in use" and no explanation.** Found on a ThinkPad T440p (NVIDIA 470.256.02): after playing a game and closing Steam, `modprobe -r nvidia_drm` said *Module nvidia_drm is in use*, `nvidia_drm` had one reference that no module and no program accounted for, and the app could only say that a "kernel component" might be holding it. Collecting the facts by hand showed that nobody had NVIDIA's display devices open (not even according to the kernel's own client list) and that the kernel's list of shared graphics buffers contained exactly one buffer exported by NVIDIA's display driver. A buffer nobody holds as an open file can still be kept alive by the desktop as an internal handle, so the app's scan of open files could not see it. The helper now also reads the kernel's graphics-buffer list (`/sys/kernel/debug/dma_buf/bufinfo`) and, when no program is named but NVIDIA's buffers exist, says so: *NVIDIA graphics buffers still alive: 1 … Log out and back in to release it.* The pop-up and the profile failure message turn that into plain words, and the technical log lists the buffers (size, references, attached devices, fences) and the number of buffers per exporter. The wording of the generic message changed too (it no longer suggests display mode setting). What this does not do: the app cannot release such a buffer itself, so the GPU stays on until the desktop session ends. Logging out and back in is expected to release it, but that remedy had not been confirmed on the reporting laptop when this was written.
+
+### Project
+
+- 8 tests for the buffer list, the new message and the pop-up advice (using the real format from the report); the existing driver-in-use tests no longer read the host's real kernel list.
+
 ## 2.7.0 — Time since unplugged, clearer core option (2026-11-10)
 
 ### Added

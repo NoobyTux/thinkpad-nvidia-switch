@@ -28,6 +28,12 @@ SYS_DEVICES = Path('/sys/devices')
 DRM_CLASS = Path('/sys/class/drm')
 SYS_MODULE = Path('/sys/module')
 PCI_CONFIG = Path('/etc/thinkpad-nvidia-switch/gpu-pci-address')
+# The kernel's list of every shared graphics buffer (dma-buf), readable by root with debugfs mounted.
+DMABUF_INFO = Path('/sys/kernel/debug/dma_buf/bufinfo')
+# NVIDIA's display driver exports its buffers through the generic DRM layer, which names the exporter "drm"
+# (Intel's driver says "i915"); the other names are for drivers that name themselves.
+NVIDIA_BUFFER_EXPORTERS = frozenset({'drm', 'nvidia', 'nvidia-drm', 'nvidia_drm'})
+_BUFFER_HEADER = re.compile(r'(\d+)\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+(\d+)\s+(\S+)\s+(\d+)\s*(.*)')
 PCI_RE = re.compile(r'[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]')
 DETAIL_PREFIX = 'TPNS_DETAIL|'
 DETAIL_ENABLED = False
@@ -789,6 +795,70 @@ def module_diagnostics(sys_module=SYS_MODULE):
     return lines
 
 
+def read_graphics_buffers(path=None, limit=200000):
+    """Every shared graphics buffer the kernel knows about: a list of dicts, or None when it cannot be read.
+
+    Each dict has size, count (references), exporter, inode, attached (device names) and fences (text).
+    A buffer that nobody holds as a file can still be alive, for example as a handle inside the compositor,
+    and it keeps its exporter's module loaded.
+    """
+    try:
+        handle = open(DMABUF_INFO if path is None else path, encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    buffers, current, attached = [], None, False
+    try:
+        with handle:
+            for number, raw in enumerate(handle):
+                if number >= limit:
+                    break
+                line = raw.rstrip('\n')
+                header = _BUFFER_HEADER.fullmatch(line)
+                if header:
+                    current = {'size': int(header.group(1)), 'count': int(header.group(4)), 'exporter': header.group(5),
+                               'inode': int(header.group(6)), 'attached': [], 'fences': []}
+                    buffers.append(current)
+                    attached = False
+                    continue
+                text = line.strip()
+                if current is None or not text:
+                    continue
+                if text.startswith('Attached Devices'):
+                    attached = True
+                elif text.startswith('Total '):
+                    attached = False
+                elif attached:
+                    current['attached'].append(text)
+                elif 'fence' in text:
+                    current['fences'].append(text)
+    except OSError:
+        pass                                    # a partial list is still useful
+    return buffers
+
+
+def nvidia_graphics_buffers():
+    """Buffers exported by NVIDIA's display driver that still exist (None: the kernel list is not available).
+
+    Technical log: how many buffers each exporter has, and the details of NVIDIA's.
+    """
+    buffers = read_graphics_buffers()
+    if buffers is None:
+        detail('GRAPHICS BUFFERS: the kernel list (debugfs dma_buf/bufinfo) cannot be read')
+        return None
+    totals = {}
+    for buffer in buffers:
+        totals[buffer['exporter']] = totals.get(buffer['exporter'], 0) + 1
+    detail('GRAPHICS BUFFERS by exporter: ' + (', '.join(f'{name} {count}' for name, count in sorted(totals.items())) or 'none'))
+    mine = [b for b in buffers if b['exporter'].lower() in NVIDIA_BUFFER_EXPORTERS]
+    for buffer in mine[:10]:
+        text = (f'NVIDIA GRAPHICS BUFFER: {buffer["size"]} bytes, {buffer["count"]} reference(s), inode {buffer["inode"]}, '
+                f'exporter {buffer["exporter"]}, attached to: ' + (', '.join(buffer['attached']) or 'nothing'))
+        if buffer['fences']:
+            text += '; ' + '; '.join(buffer['fences'][:3])
+        detail(text)
+    return mine
+
+
 def explain_driver_in_use(pci):
     """One line for the user after 'Module nvidia_drm is in use', plus audit lines."""
     holders = nvidia_holders(pci) if pci else {}
@@ -796,6 +866,7 @@ def explain_driver_in_use(pci):
         detail(f'NVIDIA HOLDER: PID {pid} {name}: ' + ', '.join(paths))
     for line in module_diagnostics():
         detail(f'NVIDIA MODULE {line}')
+    buffers = nvidia_graphics_buffers()
     if holders:
         text = (f'NVIDIA is held open by: {holder_summary(holders)}. Close them and try again; on KDE Wayland see the '
                 'README section "KDE Wayland: keeping the desktop on Intel".')
@@ -803,8 +874,14 @@ def explain_driver_in_use(pci):
             text += (' KWin itself holds NVIDIA: run ./install.sh from the latest release again (it limits KWin to the '
                      'Intel GPU), then log out and back in.')
         return text
-    return ('No program was found holding an NVIDIA device open, so the driver may be held by a kernel component '
-            '(for example display mode setting). Details are in the technical log; see the README troubleshooting table.')
+    if buffers:
+        # Keep this sentence in sync with profiles.shared_buffer_count().
+        return (f'NVIDIA graphics buffers still alive: {len(buffers)}. No program has an NVIDIA device open, but the '
+                'desktop (KWin or Xwayland) usually keeps a buffer like this after a game, and it keeps the driver loaded. '
+                'Log out and back in to release it.')
+    return ('No program was found holding an NVIDIA device open, so the driver may be held by a kernel component or by a '
+            'graphics buffer the desktop kept after a game. Logging out and back in often releases the second kind. '
+            'Details are in the technical log; see the README troubleshooting table.')
 
 
 def save_state(pci):

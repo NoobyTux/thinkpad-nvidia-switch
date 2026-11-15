@@ -1477,6 +1477,7 @@ class UnloadOutcomeTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('tpns_helper_outcome', SRC / 'optimus_helper.py')
         self.h = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.h)
+        self.h.DMABUF_INFO = Path('/nonexistent/dma_buf/bufinfo')        # not the host's real list of graphics buffers
         self.loaded = set(self.h.MODULES)
 
     def run_that_removes(self, *removed, error=I915_IN_USE):
@@ -1654,6 +1655,7 @@ class DriverInUseExplanationTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('tpns_helper_in_use', SRC / 'optimus_helper.py')
         self.helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.helper)
+        self.helper.DMABUF_INFO = self.root / 'no-debugfs' / 'bufinfo'       # not the host's real list of graphics buffers
 
     def make_drm(self):
         """/sys/class/drm with Intel as card0 and NVIDIA as card1 / renderD129, plus a connector entry."""
@@ -1757,6 +1759,119 @@ class DriverInUseExplanationTests(unittest.TestCase):
         lines = self.helper.module_diagnostics(sys_module=base)
         self.assertEqual(lines, ['nvidia_drm: refcnt=2 used-by-modules=none modeset=Y fbdev=Y',
                                  'nvidia: refcnt=0 used-by-modules=nvidia_modeset'])
+
+    # Real format (a ThinkPad T440p, kernel 6.18, after a game): one buffer exported by "drm" = NVIDIA's display driver,
+    # kept alive although no program had an NVIDIA device open and nvidia_drm said refcnt=1.
+    BUFINFO = (
+        "\nDma-buf Objects:\n"
+        "size            flags           mode            count           exp_name        ino             name\n"
+        "00221184        00000002        02080007        00000001        udmabuf 00000670        <none>\n"
+        "        Attached Devices:\n"
+        "Total 0 devices attached\n\n"
+        "08388608        00000002        02080007        00000004        i915    00000669        <none>\n"
+        "        read fence:5:264698 kwin_wayland[1188] 0000:00:02.0 unsignalled\n"
+        "        Attached Devices:\n"
+        "Total 0 devices attached\n\n"
+        "08294400        00000002        02080007        00000001        drm     00000700        <none>\n"
+        "        kernel fence:0:0   signalled\n"
+        "        Attached Devices:\n"
+        "        0000:00:02.0\n"
+        "Total 1 devices attached\n\n"
+        "00016384        00000002        02080007        00000002        i915    00000663        <none>\n"
+        "        Attached Devices:\n"
+        "Total 0 devices attached\n\n")
+
+    def with_bufinfo(self, text):
+        path = self.root / 'bufinfo'
+        path.write_text(text)
+        self.helper.DMABUF_INFO = path
+
+    def unload_failure(self, holders=None):
+        h = self.helper
+        with patch.object(h, 'is_loaded', return_value=True), patch.object(h, 'run', side_effect=RuntimeError(MODPROBE_IN_USE)), \
+                patch.object(h, 'nvidia_holders', return_value=holders or {}), patch.object(h, 'module_diagnostics', return_value=[]):
+            with self.assertRaises(RuntimeError) as caught:
+                h.unload_stack(self.PCI)
+        return str(caught.exception)
+
+    def test_the_kernel_list_of_graphics_buffers_is_parsed(self):
+        self.with_bufinfo(self.BUFINFO)
+        buffers = self.helper.read_graphics_buffers()
+        self.assertEqual([b['exporter'] for b in buffers], ['udmabuf', 'i915', 'drm', 'i915'])
+        nvidia = buffers[2]
+        self.assertEqual((nvidia['size'], nvidia['count'], nvidia['inode']), (8294400, 1, 700))
+        self.assertEqual(nvidia['attached'], ['0000:00:02.0'])
+        self.assertEqual(nvidia['fences'], ['kernel fence:0:0   signalled'])
+        self.assertEqual(buffers[1]['fences'], ['read fence:5:264698 kwin_wayland[1188] 0000:00:02.0 unsignalled'])
+        self.assertEqual(buffers[0]['attached'], [])
+
+    def test_an_unreadable_or_odd_list_is_handled(self):
+        self.assertIsNone(self.helper.read_graphics_buffers())                   # debugfs not mounted / not root
+        self.with_bufinfo('')
+        self.assertEqual(self.helper.read_graphics_buffers(), [])
+        self.with_bufinfo('garbage\n  more garbage\nTotal x\n' + self.BUFINFO + 'trailing nonsense\n')
+        self.assertEqual(len(self.helper.read_graphics_buffers()), 4)
+        self.with_bufinfo(self.BUFINFO)
+        self.assertEqual(len(self.helper.read_graphics_buffers(limit=8)), 2)       # a size cap, not a crash
+
+    def test_only_the_nvidia_exporter_is_counted_and_everything_is_logged(self):
+        import contextlib
+        import io
+        self.with_bufinfo(self.BUFINFO)
+        self.helper.DETAIL_ENABLED = True
+        stream = io.StringIO()
+        with contextlib.redirect_stderr(stream):
+            mine = self.helper.nvidia_graphics_buffers()
+        self.assertEqual([b['inode'] for b in mine], [700])
+        log = stream.getvalue()
+        self.assertIn('GRAPHICS BUFFERS by exporter: drm 1, i915 2, udmabuf 1', log)
+        self.assertIn('NVIDIA GRAPHICS BUFFER: 8294400 bytes, 1 reference(s), inode 700, exporter drm, attached to: 0000:00:02.0', log)
+
+    def test_a_leftover_buffer_is_named_when_no_program_holds_the_driver(self):
+        self.with_bufinfo(self.BUFINFO)
+        message = self.unload_failure()
+        self.assertIn('NVIDIA graphics buffers still alive: 1.', message)
+        self.assertIn('Log out and back in', message)
+        self.assertNotIn('No program was found', message)
+        import profiles
+        self.assertEqual(profiles.shared_buffer_count(message), 1)                    # the GUI understands the helper's sentence
+        reason, advice = profiles.explain_busy(message, again='try again')
+        self.assertEqual(reason, 'a graphics buffer left over from a game is still alive')
+        self.assertIn('Log out and back in to release it, then try again.', advice)
+        friendly = profiles.friendly_profile_failure('gpu-off failed: ' + message + '; prior changes: none.')
+        self.assertIn('NVIDIA cannot be turned off because a graphics buffer left over from a game is still alive.', friendly)
+        self.assertNotIn('PID', friendly)
+
+    def test_several_buffers_are_counted(self):
+        extra = ('08294400        00000002        02080007        00000001        drm     00000701        <none>\n'
+                 '        Attached Devices:\nTotal 0 devices attached\n\n')
+        self.with_bufinfo(self.BUFINFO + extra + extra.replace('701', '702'))
+        message = self.unload_failure()
+        self.assertIn('NVIDIA graphics buffers still alive: 3.', message)
+        import profiles
+        reason, advice = profiles.explain_busy(message)
+        self.assertEqual(reason, '3 graphics buffers left over from a game are still alive')
+        self.assertIn('keeps them', advice)
+
+    def test_a_program_holding_the_driver_is_named_in_preference_to_the_buffers(self):
+        self.with_bufinfo(self.BUFINFO)
+        message = self.unload_failure(holders={812: ('blender', ['/dev/dri/card1'])})
+        self.assertIn('NVIDIA is held open by: blender (PID 812)', message)
+        self.assertNotIn('graphics buffers still alive', message)
+
+    def test_other_drivers_buffers_do_not_count(self):
+        self.with_bufinfo(self.BUFINFO.replace('drm     00000700', 'i915    00000700'))
+        message = self.unload_failure()
+        self.assertIn('No program was found holding an NVIDIA device open', message)
+        self.assertIn('graphics buffer the desktop kept after a game', message)
+
+    def test_without_the_kernel_list_the_message_still_helps(self):
+        message = self.unload_failure()                                            # debugfs unreadable
+        self.assertIn('No program was found holding an NVIDIA device open', message)
+        self.assertIn('Logging out and back in often releases', message)
+        import profiles
+        reason, _advice = profiles.explain_busy(message)
+        self.assertEqual(reason, 'it is still in use, but no program holding it was found')
 
     def test_profile_message_names_the_holder_and_stays_in_sync_with_the_helper(self):
         import profiles

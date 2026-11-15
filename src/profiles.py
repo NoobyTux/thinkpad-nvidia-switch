@@ -90,6 +90,12 @@ def held_open_by(details):
     return match.group(1) if match else ''
 
 
+def shared_buffer_count(details):
+    """How many leftover NVIDIA graphics buffers the helper reported ('NVIDIA graphics buffers still alive: N'), or 0."""
+    match = re.search(r'NVIDIA graphics buffers still alive: (\d+)', str(details))
+    return int(match.group(1)) if match else 0
+
+
 # Display names for programs that commonly hold NVIDIA open.
 FRIENDLY_APP_NAMES = {
     'steam': 'Steam', 'steamwebhelper': 'Steam', 'steamwebhelper.sh': 'Steam',
@@ -157,6 +163,13 @@ def explain_busy(details, extra_names=(), again='try again'):
     if desktop:
         return (f'the desktop session ({_join_names(desktop)}) is holding it open',
                 f'This is not a program you can close. See the {README_KDE_SECTION}.')
+    buffers = shared_buffer_count(details)
+    if buffers:
+        return ('a graphics buffer left over from a game is still alive' if buffers == 1 else
+                f'{buffers} graphics buffers left over from a game are still alive',
+                f'No program has NVIDIA open: the desktop (KWin or Xwayland) keeps {"it" if buffers == 1 else "them"}. '
+                f'Log out and back in to release {"it" if buffers == 1 else "them"}, then {again}. '
+                'If that does not help, restart the computer.')
     return ('it is still in use, but no program holding it was found',
             'The display driver itself may be holding it. See View activity log and the README troubleshooting table.')
 
